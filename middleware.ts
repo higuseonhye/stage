@@ -36,7 +36,8 @@ export async function middleware(request: NextRequest) {
   const isProtected =
     path.startsWith("/dashboard") ||
     path.startsWith("/runs") ||
-    path.startsWith("/settings");
+    path.startsWith("/settings") ||
+    path.startsWith("/resources");
 
   if (isProtected && !user) {
     const redirect = NextResponse.redirect(new URL("/login", request.url));

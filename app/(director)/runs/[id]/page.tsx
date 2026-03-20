@@ -2,6 +2,7 @@ import { notFound, redirect } from "next/navigation";
 
 export const dynamic = "force-dynamic";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { fetchRunForPage } from "@/lib/fetch-run-for-page";
 import { RunDetail } from "@/components/RunDetail";
 
 type PageProps = { params: Promise<{ id: string }> };
@@ -14,11 +15,7 @@ export default async function RunPage({ params }: PageProps) {
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { data: run, error: runErr } = await supabase
-    .from("runs")
-    .select("id, topic, user_message, status, created_at, completed_at, workspace_id")
-    .eq("id", id)
-    .maybeSingle();
+  const { data: run, error: runErr } = await fetchRunForPage(supabase, id);
 
   if (runErr || !run) notFound();
 
@@ -65,6 +62,7 @@ export default async function RunPage({ params }: PageProps) {
         status: run.status,
         created_at: run.created_at,
         completed_at: run.completed_at,
+        decision_memo_markdown: run.decision_memo_markdown ?? null,
       }}
       initialMessages={messages ?? []}
       initialGates={gates ?? []}

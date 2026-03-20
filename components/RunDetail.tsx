@@ -5,9 +5,11 @@ import Link from "next/link";
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 import { DiscussionPanel } from "@/components/DiscussionPanel";
 import { ApprovalGate } from "@/components/ApprovalGate";
+import { MemoMarkdown } from "@/components/MemoMarkdown";
 import { ExecutionTimeline, type StepRow } from "@/components/ExecutionTimeline";
 import { AuditLog, type AuditRow } from "@/components/AuditLog";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button-variants";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
@@ -23,6 +25,7 @@ export type RunRow = {
   status: string;
   created_at: string;
   completed_at: string | null;
+  decision_memo_markdown: string | null;
 };
 
 export type AgentMessageRow = {
@@ -66,6 +69,8 @@ export function RunDetail({
   const [audit, setAudit] = useState(initialAudit);
   const [messages, setMessages] = useState(initialMessages);
   const [criticExcerpt, setCriticExcerpt] = useState("");
+  const [memoBusy, setMemoBusy] = useState(false);
+  const [memoError, setMemoError] = useState<string | null>(null);
 
   const pendingGate =
     gates.find((g) => g.status === "pending") ?? null;
@@ -85,9 +90,15 @@ export function RunDetail({
 
   const refresh = useCallback(async () => {
     const supabase = createBrowserSupabaseClient();
-    const [{ data: r }, { data: g }, { data: st }, { data: au }, { data: msg }] =
+    const [{ data: rBase }, { data: g }, { data: st }, { data: au }, { data: msg }] =
       await Promise.all([
-        supabase.from("runs").select("*").eq("id", runId).single(),
+        supabase
+          .from("runs")
+          .select(
+            "id, topic, user_message, status, created_at, completed_at",
+          )
+          .eq("id", runId)
+          .single(),
         supabase.from("approval_gates").select("*").eq("run_id", runId),
         supabase.from("execution_steps").select("*").eq("run_id", runId),
         supabase.from("audit_events").select("*").eq("run_id", runId),
@@ -98,12 +109,50 @@ export function RunDetail({
           .order("round", { ascending: true })
           .order("created_at", { ascending: true }),
       ]);
-    if (r) setRun(r as RunRow);
+    let r = rBase as RunRow | null;
+    if (r) {
+      const memoRes = await supabase
+        .from("runs")
+        .select("decision_memo_markdown")
+        .eq("id", runId)
+        .maybeSingle();
+      const memo =
+        !memoRes.error && memoRes.data
+          ? ((memoRes.data as { decision_memo_markdown?: string | null })
+              .decision_memo_markdown ?? null)
+          : null;
+      r = { ...r, decision_memo_markdown: memo };
+    }
+    if (r) setRun(r);
     if (g) setGates(g as GateRow[]);
     if (st) setSteps(st as StepRow[]);
     if (au) setAudit(au as AuditRow[]);
     if (msg) setMessages(msg as AgentMessageRow[]);
   }, [runId]);
+
+  const regenerateMemo = useCallback(async () => {
+    setMemoBusy(true);
+    setMemoError(null);
+    try {
+      const res = await fetch(`/api/runs/${runId}/regenerate-memo`, {
+        method: "POST",
+      });
+      const json = (await res.json().catch(() => ({}))) as {
+        error?: string;
+      };
+      if (!res.ok) {
+        setMemoError(
+          typeof json.error === "string" ? json.error : res.statusText,
+        );
+        return;
+      }
+      await refresh();
+    } catch (e) {
+      setMemoError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setMemoBusy(false);
+    }
+  }, [runId, refresh]);
 
   useEffect(() => {
     const supabase = createBrowserSupabaseClient();
@@ -269,6 +318,74 @@ export function RunDetail({
         </h2>
         <ExecutionTimeline runId={runId} steps={steps} />
       </section>
+
+      {run.status === "completed" ? (
+        <>
+          <Separator />
+          <section className="space-y-3">
+            <h2 className="text-muted-foreground text-xs font-medium tracking-widest uppercase">
+              Decision memo — generated
+            </h2>
+            {run.decision_memo_markdown?.trim() ? (
+              <div className="border-border/60 bg-card/30 rounded-lg border p-4">
+                <p className="text-muted-foreground mb-3 text-xs leading-relaxed">
+                  Filled automatically when the run finishes (
+                  <code className="text-foreground/80">PERFORMANCE_MODEL</code>
+                  ; after approve + performance, or after deny). Blank template
+                  for your own notes:{" "}
+                  <Link
+                    href="/resources/decision-memo"
+                    className="text-primary underline-offset-4 hover:underline"
+                  >
+                    /resources/decision-memo
+                  </Link>
+                  .
+                </p>
+                <div className="max-h-[min(70vh,720px)] overflow-y-auto rounded-md border border-border/50 bg-background/50 p-3">
+                  <MemoMarkdown source={run.decision_memo_markdown} />
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-muted-foreground text-sm leading-relaxed">
+                  No generated memo stored yet. Common cases: this run finished
+                  before the memo column existed, generation failed (see script
+                  for{" "}
+                  <code className="text-foreground/80">decision_memo_failed</code>
+                  ), or the pipeline has not finished writing. Printable blank:{" "}
+                  <Link
+                    href="/resources/decision-memo"
+                    className="text-primary underline-offset-4 hover:underline"
+                  >
+                    decision memo template
+                  </Link>
+                  .
+                </p>
+                {steps.length > 0 || gates.length > 0 ? (
+                  <div className="flex flex-col items-start gap-2">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      disabled={memoBusy}
+                      onClick={() => void regenerateMemo()}
+                    >
+                      {memoBusy ? "Generating…" : "Generate decision memo now"}
+                    </Button>
+                    {memoError ? (
+                      <p className="text-destructive text-sm">{memoError}</p>
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="text-muted-foreground text-sm">
+                    No gate or execution data on this run — nothing to feed a
+                    memo.
+                  </p>
+                )}
+              </div>
+            )}
+          </section>
+        </>
+      ) : null}
 
       <Separator />
 

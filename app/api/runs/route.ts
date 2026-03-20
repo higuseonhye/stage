@@ -2,6 +2,15 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { ensureWorkspaceForUser } from "@/lib/workspace";
+import {
+  countRunsCreatedSinceUtc,
+  MAX_RUNS_PER_DAY,
+  utcDayStartIso,
+} from "@/lib/daily-run-quota";
+import {
+  countRunsForQuestion,
+  MAX_RUNS_PER_QUESTION,
+} from "@/lib/question-run-limit";
 
 const createSchema = z.object({
   topic: z.string().min(1).max(2000),
@@ -35,6 +44,36 @@ export async function POST(request: Request) {
   const { topic, userMessage } = parsed.data;
 
   try {
+    const usedToday = await countRunsCreatedSinceUtc(
+      supabase,
+      user.id,
+      utcDayStartIso(),
+    );
+    if (usedToday >= MAX_RUNS_PER_DAY) {
+      return NextResponse.json(
+        {
+          error: `You've used all ${MAX_RUNS_PER_DAY} runs for today. Resets at midnight UTC.`,
+        },
+        { status: 429 },
+      );
+    }
+
+    const usedForQuestion = await countRunsForQuestion(
+      supabase,
+      user.id,
+      topic,
+      userMessage,
+    );
+    if (usedForQuestion >= MAX_RUNS_PER_QUESTION) {
+      return NextResponse.json(
+        {
+          error:
+            "Maximum 3 runs for this question (same topic and brief). Change the wording or brief to run again.",
+        },
+        { status: 429 },
+      );
+    }
+
     const workspaceId = await ensureWorkspaceForUser(supabase, user.id);
     const { data: run, error } = await supabase
       .from("runs")

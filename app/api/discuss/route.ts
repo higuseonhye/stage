@@ -1,17 +1,19 @@
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { AGENTS } from "@/lib/agents";
 import {
-  getLanguageModel,
+  getDiscussionModel,
   getOpenAIFallbackModel,
   streamAgentTurn,
 } from "@/lib/stream";
+import { evaluateDiscussionConvergence } from "@/lib/convergence";
 import { z } from "zod";
 
 export const maxDuration = 300;
 
+const MAX_DISCUSSION_ROUNDS = 5;
+
 const bodySchema = z.object({
   runId: z.string().uuid(),
-  refineRounds: z.number().int().min(0).max(2).optional().default(0),
 });
 
 function buildActionPlan(lastRound: Record<string, string>) {
@@ -44,7 +46,7 @@ export async function POST(request: Request) {
     });
   }
 
-  const { runId, refineRounds } = parsed.data;
+  const { runId } = parsed.data;
 
   const { data: run, error: runError } = await supabase
     .from("runs")
@@ -97,7 +99,7 @@ export async function POST(request: Request) {
       await supabase.from("audit_events").insert({
         run_id: runId,
         event_type: "discussion_started",
-        payload: { refineRounds },
+        payload: { adaptive: true, maxRounds: MAX_DISCUSSION_ROUNDS },
       });
 
       let priorRound: Record<string, string> = {};
@@ -108,16 +110,29 @@ export async function POST(request: Request) {
         round: number;
       }[] = [];
 
-      const totalRounds = 1 + refineRounds;
+      let prevForConvergence: Record<string, string> | null = null;
+      let lowScoreStreak = 0;
+      let stopReason = "";
+      let lastRoundTexts: Record<string, string> = {};
+      const refinementByAgent: Record<string, number[]> = Object.fromEntries(
+        AGENTS.map((a) => [a.id, [] as number[]]),
+      );
+      const improvementSeries: number[] = [];
 
-      for (let round = 0; round < totalRounds; round++) {
+      for (let round = 0; round < MAX_DISCUSSION_ROUNDS; round++) {
+        enqueue({
+          type: "round_start",
+          round: round + 1,
+          maxRounds: MAX_DISCUSSION_ROUNDS,
+        });
+
         await Promise.all(
           AGENTS.map(async (agent) => {
             let full = "";
             const tryStream = async (useFallback: boolean) => {
               const model = useFallback
-                ? getOpenAIFallbackModel() ?? getLanguageModel()
-                : getLanguageModel();
+                ? getOpenAIFallbackModel() ?? getDiscussionModel()
+                : getDiscussionModel();
               const result = streamAgentTurn({
                 agent,
                 topic: run.topic,
@@ -136,12 +151,12 @@ export async function POST(request: Request) {
                     text: part,
                   });
                 }
-              } catch (err) {
+              } catch {
                 if (!useFallback && getOpenAIFallbackModel()) {
                   full = "";
                   await tryStream(true);
                 } else {
-                  throw err;
+                  throw new Error("Agent stream failed");
                 }
               }
             };
@@ -163,7 +178,7 @@ export async function POST(request: Request) {
           }),
         );
 
-        priorRound = Object.fromEntries(
+        const currentRound: Record<string, string> = Object.fromEntries(
           AGENTS.map((a) => {
             const row = allMessages.filter(
               (m) => m.agent_id === a.id && m.round === round,
@@ -172,15 +187,60 @@ export async function POST(request: Request) {
             return [a.id, last?.content ?? ""];
           }),
         );
+
+        lastRoundTexts = { ...currentRound };
+
+        if (prevForConvergence !== null) {
+          const conv = await evaluateDiscussionConvergence({
+            previousRound: prevForConvergence,
+            currentRound,
+          });
+
+          improvementSeries.push(conv.improvement);
+          for (const a of AGENTS) {
+            refinementByAgent[a.id].push(conv.perAgent[a.id] ?? 0);
+          }
+
+          enqueue({
+            type: "convergence",
+            round: round + 1,
+            score: conv.improvement,
+            criticNewObjections: conv.critic_new_objections,
+            strategistNewOptions: conv.strategist_new_options,
+            perAgentScores: conv.perAgent,
+          });
+
+          if (conv.improvement < 10) {
+            lowScoreStreak += 1;
+          } else {
+            lowScoreStreak = 0;
+          }
+
+          if (lowScoreStreak >= 2) {
+            stopReason = `Converged at round ${round + 1} — quality stable`;
+            break;
+          }
+
+          if (
+            !conv.critic_new_objections &&
+            !conv.strategist_new_options
+          ) {
+            stopReason = `Converged at round ${round + 1} — panel settled (no new objections or strategic options)`;
+            break;
+          }
+        }
+
+        prevForConvergence = { ...currentRound };
+        priorRound = { ...currentRound };
+
+        if (round === MAX_DISCUSSION_ROUNDS - 1) {
+          stopReason = `Stopped at round ${MAX_DISCUSSION_ROUNDS} — maximum rounds`;
+        }
       }
 
-      const lastRoundTexts = Object.fromEntries(
-        AGENTS.map((a) => {
-          const row = allMessages.filter((m) => m.agent_id === a.id);
-          const last = row[row.length - 1];
-          return [a.id, last?.content ?? ""];
-        }),
-      );
+      if (!stopReason) {
+        stopReason = `Stopped at round ${MAX_DISCUSSION_ROUNDS} — maximum rounds`;
+      }
 
       for (const m of allMessages) {
         await supabase.from("agent_messages").insert({
@@ -226,14 +286,27 @@ export async function POST(request: Request) {
         payload: { gate_id: gate.id },
       });
 
+      const finalRoundNumber =
+        allMessages.length === 0
+          ? 1
+          : Math.max(...allMessages.map((m) => m.round)) + 1;
+
       enqueue({
         type: "discussion_complete",
         gateId: gate.id,
         criticExcerpt: lastRoundTexts.critic ?? "",
+        stopReason,
+        finalRound: finalRoundNumber,
+        maxRounds: MAX_DISCUSSION_ROUNDS,
+        refinementByAgent,
+        improvementSeries,
       });
     } catch (e) {
       console.error(e);
-      enqueue({ type: "error", message: e instanceof Error ? e.message : String(e) });
+      enqueue({
+        type: "error",
+        message: e instanceof Error ? e.message : String(e),
+      });
       await supabase
         .from("runs")
         .update({ status: "failed" })

@@ -7,9 +7,14 @@ import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button-variants";
 import { cn } from "@/lib/utils";
 
-const links = [
+const links: { href: string; label: string; title?: string }[] = [
   { href: "/dashboard", label: "Runs" },
   { href: "/runs/new", label: "New run" },
+  {
+    href: "/resources/decision-memo",
+    label: "Decision memo",
+    title: "Generic one-page decision template for any run",
+  },
   { href: "/settings", label: "Settings" },
 ];
 
@@ -38,6 +43,7 @@ export function AppNav() {
             <Link
               key={l.href}
               href={l.href}
+              title={l.title}
               className={cn(
                 buttonVariants({ variant: "ghost", size: "sm" }),
                 "text-muted-foreground",

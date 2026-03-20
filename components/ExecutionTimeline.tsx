@@ -8,6 +8,7 @@ import { agentById } from "@/lib/agents";
 import { AGENT_COLOR_CLASSES } from "@/lib/agents";
 import { cn } from "@/lib/utils";
 import { RotateCcw } from "lucide-react";
+import { atAGlanceSummary } from "@/lib/text-snippets";
 
 export type StepRow = {
   id: string;
@@ -111,7 +112,13 @@ export function ExecutionTimeline({ runId, steps }: Props) {
                     <h4 className="text-muted-foreground mb-0.5 text-[10px] uppercase">
                       Input
                     </h4>
-                    <pre className="bg-muted/25 max-h-28 overflow-auto rounded border border-border/60 p-2 font-mono text-[11px] whitespace-pre-wrap">
+                    {s.input.length > 200 ? (
+                      <p className="text-muted-foreground mb-1 text-[11px] leading-snug">
+                        <span className="text-foreground/75 font-medium">Skim: </span>
+                        {atAGlanceSummary(s.input, 260)}
+                      </p>
+                    ) : null}
+                    <pre className="bg-muted/25 max-h-[min(200px,32vh)] overflow-y-auto rounded border border-border/60 p-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words">
                       {s.input}
                     </pre>
                   </div>
@@ -119,7 +126,13 @@ export function ExecutionTimeline({ runId, steps }: Props) {
                     <h4 className="text-muted-foreground mb-0.5 text-[10px] uppercase">
                       Output
                     </h4>
-                    <pre className="bg-muted/25 max-h-40 overflow-auto rounded border border-border/60 p-2 font-mono text-[11px] whitespace-pre-wrap">
+                    {s.output && s.output.length > 200 ? (
+                      <p className="text-muted-foreground mb-1 text-[11px] leading-snug">
+                        <span className="text-foreground/75 font-medium">Skim: </span>
+                        {atAGlanceSummary(s.output, 260)}
+                      </p>
+                    ) : null}
+                    <pre className="bg-muted/25 max-h-[min(280px,40vh)] overflow-y-auto rounded border border-border/60 p-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words">
                       {s.output || "—"}
                     </pre>
                   </div>

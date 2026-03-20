@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { executePerformanceStep } from "@/lib/execution";
+import { persistDecisionMemoForRun } from "@/lib/persist-decision-memo";
 
 const bodySchema = z.object({
   stepId: z.string().uuid(),
@@ -113,6 +114,7 @@ export async function POST(request: Request, context: RouteContext) {
         event_type: "run_completed",
         payload: { after_retry: true },
       });
+      await persistDecisionMemoForRun(supabase, runId);
     }
 
     return NextResponse.json({ ok: true });

@@ -28,7 +28,8 @@ create table if not exists public.runs (
       )
     ),
   created_at timestamptz not null default now(),
-  completed_at timestamptz
+  completed_at timestamptz,
+  decision_memo_markdown text
 );
 
 create table if not exists public.agent_messages (
@@ -88,6 +89,13 @@ create index if not exists idx_agent_messages_run on public.agent_messages (run_
 create index if not exists idx_approval_gates_run on public.approval_gates (run_id);
 create index if not exists idx_execution_steps_run on public.execution_steps (run_id);
 create index if not exists idx_audit_events_run on public.audit_events (run_id);
+
+-- Runs created before this column existed (older init revisions)
+alter table public.runs
+  add column if not exists decision_memo_markdown text;
+
+comment on column public.runs.decision_memo_markdown is
+  'LLM-filled one-pager from topic, discussion, cue, and execution steps';
 
 -- -----------------------------------------------------------------------------
 -- Row level security

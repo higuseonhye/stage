@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Card } from "@/components/ui/card";
 import { Check, Pencil, X } from "lucide-react";
+import { atAGlanceSummary, extractSectionHeadings } from "@/lib/text-snippets";
 
 type Gate = {
   id: string;
@@ -51,6 +52,12 @@ export function ApprovalGate({
   if (!gate || gate.status !== "pending") {
     return null;
   }
+
+  const planGlance = atAGlanceSummary(gate.action_plan, 420);
+  const planHeads = extractSectionHeadings(gate.action_plan, 10);
+  const criticGlance = criticExcerpt
+    ? atAGlanceSummary(criticExcerpt, 280)
+    : "";
 
   const fmt = (s: number) => {
     const m = Math.floor(s / 60);
@@ -99,9 +106,17 @@ export function ApprovalGate({
           <h3 className="mb-1 text-xs font-medium tracking-wide text-amber-200/90 uppercase">
             Critic — risk lens
           </h3>
-          <p className="font-mono text-xs leading-relaxed text-amber-100/85 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
-            {criticExcerpt}
-          </p>
+          {criticGlance && criticGlance.length < criticExcerpt.length ? (
+            <p className="mb-2 text-xs leading-snug text-amber-100/90">
+              <span className="font-medium text-amber-200/95">Skim: </span>
+              {criticGlance}
+            </p>
+          ) : null}
+          <div className="max-h-[min(200px,28vh)] overflow-y-auto rounded border border-amber-500/25 bg-amber-950/10 p-2">
+            <p className="font-mono text-xs leading-relaxed text-amber-100/85 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+              {criticExcerpt}
+            </p>
+          </div>
         </div>
       ) : null}
 
@@ -109,6 +124,22 @@ export function ApprovalGate({
         <h3 className="text-muted-foreground mb-2 text-xs font-medium tracking-wide uppercase">
           Proposed action plan
         </h3>
+        {!editOpen && planHeads.length > 0 ? (
+          <div className="text-muted-foreground mb-2 rounded-md border border-border/60 bg-muted/15 px-3 py-2 text-xs">
+            <span className="font-medium text-foreground/80">Outline: </span>
+            <ul className="mt-1 list-inside list-disc space-y-0.5">
+              {planHeads.map((h) => (
+                <li key={h}>{h}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        {!editOpen && planGlance && planGlance.length < gate.action_plan.length ? (
+          <p className="text-muted-foreground mb-2 text-xs leading-relaxed">
+            <span className="text-foreground/80 font-medium">At a glance: </span>
+            {planGlance}
+          </p>
+        ) : null}
         {editOpen ? (
           <Textarea
             value={edited}
@@ -116,9 +147,11 @@ export function ApprovalGate({
             className="min-h-[200px] font-mono text-xs"
           />
         ) : (
-          <pre className="bg-muted/30 rounded-md border border-border/80 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
-            {gate.action_plan}
-          </pre>
+          <div className="bg-muted/30 max-h-[min(55vh,520px)] overflow-y-auto rounded-md border border-border/80 p-3">
+            <pre className="font-mono text-xs leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+              {gate.action_plan}
+            </pre>
+          </div>
         )}
       </div>
 

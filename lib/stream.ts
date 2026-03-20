@@ -3,29 +3,57 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
 import type { AgentDefinition } from "@/lib/agents";
 
+function requireAnthropicOrFallback(): {
+  anthropic: ReturnType<typeof createAnthropic> | null;
+  openai: ReturnType<typeof createOpenAI> | null;
+} {
+  const ak = process.env.ANTHROPIC_API_KEY;
+  const ok = process.env.OPENAI_API_KEY;
+  return {
+    anthropic: ak ? createAnthropic({ apiKey: ak }) : null,
+    openai: ok ? createOpenAI({ apiKey: ok }) : null,
+  };
+}
+
+/** Discussion + adaptive convergence (default: claude-haiku-4-5) */
+export function getDiscussionModel(): LanguageModel {
+  const { anthropic, openai } = requireAnthropicOrFallback();
+  const id =
+    process.env.DISCUSSION_MODEL?.trim() || "claude-haiku-4-5";
+  if (anthropic) return anthropic(id);
+  if (openai) {
+    return openai(process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini");
+  }
+  throw new Error(
+    "Set ANTHROPIC_API_KEY for discussion models, or OPENAI_API_KEY as fallback.",
+  );
+}
+
+/** Performance pipeline steps (default: claude-sonnet-4-6) */
+export function getPerformanceModel(): LanguageModel {
+  const { anthropic, openai } = requireAnthropicOrFallback();
+  const id =
+    process.env.PERFORMANCE_MODEL?.trim() || "claude-sonnet-4-6";
+  if (anthropic) return anthropic(id);
+  if (openai) {
+    return openai(process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini");
+  }
+  throw new Error(
+    "Set ANTHROPIC_API_KEY for performance models, or OPENAI_API_KEY as fallback.",
+  );
+}
+
+/** @deprecated Prefer getDiscussionModel / getPerformanceModel */
 export function getLanguageModel(): LanguageModel {
-  const anthropicKey = process.env.ANTHROPIC_API_KEY;
-  if (anthropicKey) {
-    const anthropic = createAnthropic({ apiKey: anthropicKey });
-    const id =
-      process.env.ANTHROPIC_MODEL?.trim() || "claude-sonnet-4-20250514";
-    return anthropic(id);
-  }
-  const openaiKey = process.env.OPENAI_API_KEY;
-  if (!openaiKey) {
-    throw new Error(
-      "Set ANTHROPIC_API_KEY (primary) or OPENAI_API_KEY (fallback).",
-    );
-  }
-  const openai = createOpenAI({ apiKey: openaiKey });
-  return openai(process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini");
+  return getDiscussionModel();
 }
 
 export function getOpenAIFallbackModel(): LanguageModel | null {
-  const openaiKey = process.env.OPENAI_API_KEY;
-  if (!openaiKey) return null;
-  const openai = createOpenAI({ apiKey: openaiKey });
-  return openai(process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini");
+  const ok = process.env.OPENAI_API_KEY;
+  if (!ok) return null;
+  return createOpenAI({ apiKey: ok })(
+    process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini",
+  );
 }
 
 export function buildUserPrompt(params: {
@@ -59,7 +87,7 @@ export function streamAgentTurn(params: {
     round: params.round,
     priorRoundTexts: params.priorRoundTexts,
   });
-  const model = params.model ?? getLanguageModel();
+  const model = params.model ?? getDiscussionModel();
   return streamText({
     model,
     system: params.agent.systemPrompt,
@@ -76,9 +104,10 @@ export type AgentTurnParams = Omit<
 export async function runAgentTurnText(params: AgentTurnParams): Promise<string> {
   let text = "";
   const attempt = async (useFallback: boolean) => {
+    const primary = params.model ?? getDiscussionModel();
     const model = useFallback
-      ? getOpenAIFallbackModel() ?? getLanguageModel()
-      : (params.model ?? getLanguageModel());
+      ? getOpenAIFallbackModel() ?? primary
+      : primary;
     const result = streamAgentTurn({ ...params, model });
     for await (const part of result.textStream) {
       text += part;

@@ -128,3 +128,44 @@
     @apply font-sans;
   }
 }
+
+/* Markdown body for docs rendered via react-markdown (e.g. first-hire memo) */
+@layer components {
+  .memo-md :is(h1) {
+    @apply mt-0 mb-4 text-2xl font-semibold tracking-tight;
+  }
+  .memo-md :is(h2) {
+    @apply mt-10 mb-3 border-b border-border pb-2 text-sm font-semibold tracking-tight first:mt-0;
+  }
+  .memo-md :is(hr) {
+    @apply my-8 border-border;
+  }
+  .memo-md :is(p) {
+    @apply mb-3 text-sm leading-relaxed text-foreground/90;
+  }
+  .memo-md :is(strong) {
+    @apply font-semibold text-foreground;
+  }
+  .memo-md :is(em) {
+    @apply italic text-foreground/95;
+  }
+  .memo-md :is(ul) {
+    @apply mb-3 list-disc space-y-1 pl-5 text-sm leading-relaxed text-foreground/90;
+  }
+  .memo-md :is(ol) {
+    @apply mb-3 list-decimal space-y-1 pl-5 text-sm leading-relaxed text-foreground/90;
+  }
+  .memo-md :is(li) {
+    @apply pl-0.5;
+  }
+  .memo-md :is(table) {
+    @apply my-4 w-full border-collapse text-sm;
+  }
+  .memo-md :is(th),
+  .memo-md :is(td) {
+    @apply border border-border px-3 py-2 align-top text-left;
+  }
+  .memo-md :is(th) {
+    @apply bg-muted/40 font-medium text-foreground;
+  }
+}

@@ -10,6 +10,9 @@ export type StageExample = {
   brief: string;
 };
 
+/** Example “First hire: engineer or salesperson?” — has linked printable memo in-app. */
+export const FIRST_HIRE_EXAMPLE_ID = "2";
+
 export const STAGE_EXAMPLES: StageExample[] = [
   {
     id: "1",
@@ -38,3 +41,14 @@ export const STAGE_EXAMPLES: StageExample[] = [
 ];
 
 export const DEFAULT_EXAMPLE_ID = "1";
+
+export const FIRST_HIRE_EXAMPLE = STAGE_EXAMPLES.find(
+  (e) => e.id === FIRST_HIRE_EXAMPLE_ID,
+)!;
+
+export function isFirstHireExampleContent(topic: string, brief: string): boolean {
+  return (
+    topic.trim() === FIRST_HIRE_EXAMPLE.topic.trim() &&
+    brief.trim() === FIRST_HIRE_EXAMPLE.brief.trim()
+  );
+}

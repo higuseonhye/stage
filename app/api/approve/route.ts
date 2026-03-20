@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { executePerformanceStep } from "@/lib/execution";
+import { persistDecisionMemoForRun } from "@/lib/persist-decision-memo";
 
 export const maxDuration = 300;
 
@@ -11,6 +12,13 @@ const bodySchema = z.object({
   editedPlan: z.string().max(50_000).optional(),
   humanNote: z.string().max(2000).optional().nullable(),
 });
+
+type PlanCtx = {
+  plan: string;
+  analyst: string;
+  critic: string;
+  strategist: string;
+};
 
 async function assertGateAndOwner(
   supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>,
@@ -30,7 +38,7 @@ async function assertGateAndOwner(
 
   const { data: run } = await supabase
     .from("runs")
-    .select("id, workspace_id, topic, status")
+    .select("id, workspace_id, topic, status, user_message")
     .eq("id", gate.run_id)
     .maybeSingle();
 
@@ -108,6 +116,8 @@ export async function POST(request: Request) {
       payload: { gate_id: gateId },
     });
 
+    await persistDecisionMemoForRun(supabase, run.id);
+
     return NextResponse.json({ ok: true });
   }
 
@@ -147,56 +157,91 @@ export async function POST(request: Request) {
     .update({ status: "executing" })
     .eq("id", run.id);
 
-  const steps = [
+  const acc: PlanCtx = {
+    plan: finalPlan,
+    analyst: "",
+    critic: "",
+    strategist: "",
+  };
+
+  const pipeline: {
+    step_index: number;
+    agent_id: keyof PlanCtx | "executor";
+    buildInput: (c: PlanCtx) => string;
+    store: (c: PlanCtx, out: string) => void;
+  }[] = [
     {
       step_index: 0,
       agent_id: "analyst",
-      input: `Validate and stress-test this approved plan. Call out gaps, dependencies, and risks briefly.\n\nPlan:\n${finalPlan}`,
+      buildInput: (c) =>
+        `Validate and stress-test this approved plan. Call out gaps, dependencies, and risks briefly.\n\nPlan:\n${c.plan}`,
+      store: (c, out) => {
+        c.analyst = out;
+      },
     },
     {
       step_index: 1,
+      agent_id: "critic",
+      buildInput: (c) =>
+        `Identify risks using the Analyst's output and the original approved plan. Surface failure modes, blind spots, and what could still go wrong.\n\n--- Approved plan ---\n${c.plan}\n\n--- Analyst output ---\n${c.analyst}`,
+      store: (c, out) => {
+        c.critic = out;
+      },
+    },
+    {
+      step_index: 2,
+      agent_id: "strategist",
+      buildInput: (c) =>
+        `Produce a refined, consolidated action plan from the Analyst output, Critic output, and the original approved plan. Be decision-ready and concrete.\n\n--- Original plan ---\n${c.plan}\n\n--- Analyst ---\n${c.analyst}\n\n--- Critic ---\n${c.critic}`,
+      store: (c, out) => {
+        c.strategist = out;
+      },
+    },
+    {
+      step_index: 3,
       agent_id: "executor",
-      input: `Produce a concise operator handoff checklist (bullets) for executing the plan.\n\nPlan:\n${finalPlan}`,
+      buildInput: (c) =>
+        `Produce a concise operator handoff checklist (bullets) from the Strategist's refined plan below.\n\n--- Strategist refined plan ---\n${c.strategist}`,
+      store: () => {
+        /* terminal step */
+      },
     },
   ];
 
-  const inserted: { id: string; run_id: string; agent_id: string; input: string }[] =
-    [];
-
-  for (const s of steps) {
-    const { data: row, error } = await supabase
-      .from("execution_steps")
-      .insert({
-        run_id: run.id,
-        gate_id: gateId,
-        step_index: s.step_index,
-        agent_id: s.agent_id,
-        input: s.input,
-        status: "queued",
-      })
-      .select("id, run_id, agent_id, input")
-      .single();
-    if (error || !row) {
-      console.error(error);
-      await supabase
-        .from("runs")
-        .update({ status: "failed", completed_at: new Date().toISOString() })
-        .eq("id", run.id);
-      return NextResponse.json(
-        { error: "Failed to create execution steps" },
-        { status: 500 },
-      );
-    }
-    inserted.push(row);
-  }
-
   try {
-    for (const row of inserted) {
-      await executePerformanceStep({
+    for (const spec of pipeline) {
+      const input = spec.buildInput(acc);
+      const { data: row, error } = await supabase
+        .from("execution_steps")
+        .insert({
+          run_id: run.id,
+          gate_id: gateId,
+          step_index: spec.step_index,
+          agent_id: spec.agent_id,
+          input,
+          status: "queued",
+        })
+        .select("id, run_id, agent_id, input")
+        .single();
+
+      if (error || !row) {
+        console.error(error);
+        await supabase
+          .from("runs")
+          .update({ status: "failed", completed_at: new Date().toISOString() })
+          .eq("id", run.id);
+        return NextResponse.json(
+          { error: "Failed to create execution steps" },
+          { status: 500 },
+        );
+      }
+
+      const output = await executePerformanceStep({
         supabase,
         stepRow: row,
         topic: run.topic,
       });
+      spec.store(acc, output);
     }
 
     const completedAt = new Date().toISOString();
@@ -208,8 +253,10 @@ export async function POST(request: Request) {
     await supabase.from("audit_events").insert({
       run_id: run.id,
       event_type: "run_completed",
-      payload: {},
+      payload: { pipeline: "four_step" },
     });
+
+    await persistDecisionMemoForRun(supabase, run.id);
   } catch (e) {
     console.error(e);
     await supabase

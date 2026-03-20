@@ -2,16 +2,26 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button-variants";
 import { cn } from "@/lib/utils";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 
 const THEME_KEY = "stage-light-mode";
 
+const RESET_CONFIRM = "DELETE_ALL_RUNS";
+
 export default function SettingsPage() {
+  const router = useRouter();
   const [light, setLight] = useState(false);
+  const [resetPhrase, setResetPhrase] = useState("");
+  const [resetBusy, setResetBusy] = useState(false);
+  const [resetErr, setResetErr] = useState<string | null>(null);
+  const [resetOk, setResetOk] = useState<string | null>(null);
 
   useEffect(() => {
     const id = requestAnimationFrame(() => {
@@ -83,6 +93,94 @@ export default function SettingsPage() {
             MVP uses one workspace per account, created automatically on your
             first run.
           </p>
+        </div>
+
+        <Separator />
+
+        <div className="border-destructive/40 rounded-lg border border-dashed p-4">
+          <h2 className="text-destructive mb-1 text-sm font-medium">
+            Delete all runs
+          </h2>
+          <p className="text-muted-foreground mb-3 text-xs leading-relaxed">
+            Removes every run in your workspace: discussion, cue, performance,
+            audit, and generated decision memos.{" "}
+            <span className="text-foreground/90 font-medium">
+              Cannot be undone.
+            </span>
+          </p>
+          <Label htmlFor="reset-confirm" className="text-xs">
+            Type{" "}
+            <code className="text-foreground/90 bg-muted rounded px-1 py-0.5">
+              {RESET_CONFIRM}
+            </code>{" "}
+            to confirm
+          </Label>
+          <Input
+            id="reset-confirm"
+            value={resetPhrase}
+            onChange={(e) => {
+              setResetPhrase(e.target.value);
+              setResetErr(null);
+              setResetOk(null);
+            }}
+            className="mt-1.5 font-mono text-xs"
+            placeholder={RESET_CONFIRM}
+            autoComplete="off"
+          />
+          {resetErr ? (
+            <p className="text-destructive mt-2 font-mono text-xs">{resetErr}</p>
+          ) : null}
+          {resetOk ? (
+            <p className="text-emerald-600 dark:text-emerald-400 mt-2 font-mono text-xs">
+              {resetOk}
+            </p>
+          ) : null}
+          <Button
+            type="button"
+            variant="destructive"
+            size="sm"
+            className="mt-3"
+            disabled={
+              resetBusy || resetPhrase.trim() !== RESET_CONFIRM
+            }
+            onClick={async () => {
+              setResetBusy(true);
+              setResetErr(null);
+              setResetOk(null);
+              try {
+                const res = await fetch("/api/runs/reset", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  credentials: "include",
+                  body: JSON.stringify({ confirm: RESET_CONFIRM }),
+                });
+                const j = (await res.json()) as {
+                  ok?: boolean;
+                  deletedCount?: number;
+                  error?: string;
+                };
+                if (!res.ok) {
+                  throw new Error(
+                    typeof j.error === "string" ? j.error : res.statusText,
+                  );
+                }
+                setResetPhrase("");
+                setResetOk(
+                  `Deleted ${j.deletedCount ?? 0} run(s). Redirecting…`,
+                );
+                router.refresh();
+                setTimeout(() => router.push("/dashboard"), 800);
+              } catch (e) {
+                setResetErr(
+                  e instanceof Error ? e.message : String(e),
+                );
+              } finally {
+                setResetBusy(false);
+              }
+            }}
+          >
+            {resetBusy ? "Deleting…" : "Delete all runs"}
+          </Button>
         </div>
       </div>
     </div>

@@ -39,3 +39,10 @@ B2B tool for small teams. Competitors land roughly $15–89 per user per month. 
 
 **Brief:**
 Four engineers rebuilding a messy prototype into something we can ship and operate. Hot debate: microservices so squads can move in parallel vs monolith until we feel real pain. Need: a decision framework, an MVP-appropriate default, when we’d reconsider, and a short director-ready paragraph to approve.
+
+---
+
+## Templates (not example copy)
+
+- **Every run:** generic one-pager in [`docs/decision-memo.md`](./docs/decision-memo.md) — **New run** always links it; nav **Decision memo**; route `/resources/decision-memo`.
+- **Example 2 — First hire:** add-on in [`docs/first-hire-decision-memo.md`](./docs/first-hire-decision-memo.md); route `/resources/first-hire-memo` (also footer on that example card).
