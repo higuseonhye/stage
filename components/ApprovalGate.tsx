@@ -1,0 +1,204 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { Card } from "@/components/ui/card";
+import { Check, Pencil, X } from "lucide-react";
+
+type Gate = {
+  id: string;
+  action_plan: string;
+  status: string;
+  created_at: string;
+  human_note: string | null;
+};
+
+type Props = {
+  gate: Gate | null;
+  criticExcerpt: string;
+  runId: string;
+  onDecided?: () => void;
+};
+
+export function ApprovalGate({
+  gate,
+  criticExcerpt,
+  runId,
+  onDecided,
+}: Props) {
+  const [editOpen, setEditOpen] = useState(false);
+  const [edited, setEdited] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [waitSec, setWaitSec] = useState(0);
+
+  useEffect(() => {
+    if (!gate || gate.status !== "pending") return;
+    const start = new Date(gate.created_at).getTime();
+    const tick = () =>
+      setWaitSec(Math.max(0, Math.floor((Date.now() - start) / 1000)));
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [gate]);
+
+  useEffect(() => {
+    if (gate) setEdited(gate.action_plan);
+  }, [gate]);
+
+  if (!gate || gate.status !== "pending") {
+    return null;
+  }
+
+  const fmt = (s: number) => {
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return m > 0 ? `${m}m ${r}s` : `${r}s`;
+  };
+
+  const post = async (body: Record<string, unknown>) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await fetch("/api/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error((j as { error?: string }).error ?? res.statusText);
+      }
+      onDecided?.();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card className="mx-auto max-w-3xl border-2 border-orange-500/55 bg-card/80 p-6 shadow-lg ring-2 ring-orange-500/25">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h2 className="text-lg font-semibold tracking-tight">Cue — approval</h2>
+          <p className="text-muted-foreground text-sm">
+            The performance pauses until you approve, deny, or edit the action
+            plan.
+          </p>
+        </div>
+        <div className="font-mono text-xs text-orange-300/90">
+          Waiting {fmt(waitSec)}
+        </div>
+      </div>
+
+      {criticExcerpt ? (
+        <div className="mb-4 rounded-md border border-amber-500/40 bg-amber-500/5 p-3">
+          <h3 className="mb-1 text-xs font-medium tracking-wide text-amber-200/90 uppercase">
+            Critic — risk lens
+          </h3>
+          <p className="max-h-32 overflow-y-auto font-mono text-xs leading-relaxed text-amber-100/85 whitespace-pre-wrap">
+            {criticExcerpt}
+          </p>
+        </div>
+      ) : null}
+
+      <div className="mb-4">
+        <h3 className="text-muted-foreground mb-2 text-xs font-medium tracking-wide uppercase">
+          Proposed action plan
+        </h3>
+        {editOpen ? (
+          <Textarea
+            value={edited}
+            onChange={(e) => setEdited(e.target.value)}
+            className="min-h-[200px] font-mono text-xs"
+          />
+        ) : (
+          <pre className="bg-muted/30 max-h-64 overflow-auto rounded-md border border-border/80 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap">
+            {gate.action_plan}
+          </pre>
+        )}
+      </div>
+
+      <div className="mb-4">
+        <label className="text-muted-foreground mb-1 block text-xs uppercase">
+          Director note (optional)
+        </label>
+        <Textarea
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="Context for the script / audit log"
+          className="font-mono text-xs"
+          rows={2}
+        />
+      </div>
+
+      {err ? (
+        <p className="text-destructive mb-3 font-mono text-sm">{err}</p>
+      ) : null}
+
+      <div className="flex flex-wrap gap-2">
+        <Button
+          size="sm"
+          className="bg-emerald-600 hover:bg-emerald-700"
+          disabled={busy}
+          onClick={() =>
+            post({
+              gateId: gate.id,
+              decision: "approve",
+              humanNote: note || null,
+            })
+          }
+        >
+          <Check className="mr-1 h-4 w-4" />
+          Approve
+        </Button>
+        <Button
+          size="sm"
+          variant="destructive"
+          disabled={busy}
+          onClick={() =>
+            post({
+              gateId: gate.id,
+              decision: "deny",
+              humanNote: note || null,
+            })
+          }
+        >
+          <X className="mr-1 h-4 w-4" />
+          Deny
+        </Button>
+        <Button
+          size="sm"
+          variant="secondary"
+          disabled={busy}
+          onClick={() => setEditOpen((v) => !v)}
+        >
+          <Pencil className="mr-1 h-4 w-4" />
+          {editOpen ? "Preview" : "Edit & approve"}
+        </Button>
+        {editOpen ? (
+          <Button
+            size="sm"
+            disabled={busy || !edited.trim()}
+            onClick={() =>
+              post({
+                gateId: gate.id,
+                decision: "edit_approve",
+                editedPlan: edited,
+                humanNote: note || null,
+              })
+            }
+          >
+            Save edit & approve
+          </Button>
+        ) : null}
+      </div>
+      <p className="text-muted-foreground mt-3 font-mono text-[10px]">
+        Run {runId.slice(0, 8)}… — execution starts only after approval.
+      </p>
+    </Card>
+  );
+}
