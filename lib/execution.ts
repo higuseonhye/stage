@@ -11,7 +11,7 @@ export async function executePerformanceStep(params: {
     input: string;
   };
   topic: string;
-}) {
+}): Promise<string> {
   const { supabase, stepRow, topic } = params;
   const agent = agentById(stepRow.agent_id);
   if (!agent) throw new Error("Unknown agent on step");
@@ -52,6 +52,8 @@ export async function executePerformanceStep(params: {
       event_type: "step_completed",
       payload: { step_id: stepRow.id, agent_id: stepRow.agent_id },
     });
+
+    return output;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     await supabase

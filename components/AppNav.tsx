@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button-variants";
@@ -15,13 +15,11 @@ const links = [
 
 export function AppNav() {
   const pathname = usePathname();
-  const router = useRouter();
 
   const signOut = async () => {
     const supabase = createBrowserSupabaseClient();
     await supabase.auth.signOut();
-    router.push("/login");
-    router.refresh();
+    window.location.assign("/login");
   };
 
   return (

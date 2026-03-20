@@ -80,7 +80,7 @@ export function ApprovalGate({
   };
 
   return (
-    <Card className="mx-auto max-w-3xl border-2 border-orange-500/55 bg-card/80 p-6 shadow-lg ring-2 ring-orange-500/25">
+    <Card className="mx-auto max-w-3xl overflow-visible border-2 border-orange-500/55 bg-card/80 p-6 shadow-lg ring-2 ring-orange-500/25">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-2">
         <div>
           <h2 className="text-lg font-semibold tracking-tight">Cue — approval</h2>
@@ -99,7 +99,7 @@ export function ApprovalGate({
           <h3 className="mb-1 text-xs font-medium tracking-wide text-amber-200/90 uppercase">
             Critic — risk lens
           </h3>
-          <p className="max-h-32 overflow-y-auto font-mono text-xs leading-relaxed text-amber-100/85 whitespace-pre-wrap">
+          <p className="font-mono text-xs leading-relaxed text-amber-100/85 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
             {criticExcerpt}
           </p>
         </div>
@@ -116,7 +116,7 @@ export function ApprovalGate({
             className="min-h-[200px] font-mono text-xs"
           />
         ) : (
-          <pre className="bg-muted/30 max-h-64 overflow-auto rounded-md border border-border/80 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap">
+          <pre className="bg-muted/30 rounded-md border border-border/80 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
             {gate.action_plan}
           </pre>
         )}

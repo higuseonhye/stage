@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button-variants";
@@ -11,7 +10,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 export default function LoginPage() {
-  const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState<string | null>(null);
@@ -28,8 +26,8 @@ export default function LoginPage() {
         password,
       });
       if (error) throw error;
-      router.push("/dashboard");
-      router.refresh();
+      // Full navigation so session cookies are sent before middleware runs on /dashboard
+      window.location.assign("/dashboard");
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {

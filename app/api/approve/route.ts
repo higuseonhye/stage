@@ -147,57 +147,121 @@ export async function POST(request: Request) {
     .update({ status: "executing" })
     .eq("id", run.id);
 
-  const steps = [
-    {
-      step_index: 0,
-      agent_id: "analyst",
-      input: `Validate and stress-test this approved plan. Call out gaps, dependencies, and risks briefly.\n\nPlan:\n${finalPlan}`,
-    },
-    {
-      step_index: 1,
-      agent_id: "executor",
-      input: `Produce a concise operator handoff checklist (bullets) for executing the plan.\n\nPlan:\n${finalPlan}`,
-    },
-  ];
+  type StepRow = {
+    id: string;
+    run_id: string;
+    agent_id: string;
+    input: string;
+  };
 
-  const inserted: { id: string; run_id: string; agent_id: string; input: string }[] =
-    [];
-
-  for (const s of steps) {
+  const insertStep = async (
+    stepIndex: number,
+    agentId: string,
+    input: string,
+  ): Promise<StepRow | null> => {
     const { data: row, error } = await supabase
       .from("execution_steps")
       .insert({
         run_id: run.id,
         gate_id: gateId,
-        step_index: s.step_index,
-        agent_id: s.agent_id,
-        input: s.input,
+        step_index: stepIndex,
+        agent_id: agentId,
+        input,
         status: "queued",
       })
       .select("id, run_id, agent_id, input")
       .single();
     if (error || !row) {
       console.error(error);
-      await supabase
-        .from("runs")
-        .update({ status: "failed", completed_at: new Date().toISOString() })
-        .eq("id", run.id);
-      return NextResponse.json(
-        { error: "Failed to create execution steps" },
-        { status: 500 },
-      );
+      return null;
     }
-    inserted.push(row);
-  }
+    return row;
+  };
 
   try {
-    for (const row of inserted) {
-      await executePerformanceStep({
-        supabase,
-        stepRow: row,
-        topic: run.topic,
-      });
-    }
+    let analystOutput = "";
+    let criticOutput = "";
+    let strategistOutput = "";
+
+    const step0 = await insertStep(
+      0,
+      "analyst",
+      `You are executing an approved performance step for the run topic below.
+
+Validate and stress-test this director-approved plan. Call out gaps, dependencies, contradictions, and what must be true for success. Be concise and structured.
+
+--- Approved plan ---
+${finalPlan}`,
+    );
+    if (!step0) throw new Error("insert step 0");
+    analystOutput = await executePerformanceStep({
+      supabase,
+      stepRow: step0,
+      topic: run.topic,
+    });
+
+    const step1 = await insertStep(
+      1,
+      "critic",
+      `You are executing an approved performance step for the run topic below.
+
+Identify risks in the approved plan: failure modes, bad assumptions, execution hazards, and what could invalidate the plan. Ground your critique in the analyst's validation.
+
+--- Approved plan ---
+${finalPlan}
+
+--- Analyst validation (prior step) ---
+${analystOutput}`,
+    );
+    if (!step1) throw new Error("insert step 1");
+    criticOutput = await executePerformanceStep({
+      supabase,
+      stepRow: step1,
+      topic: run.topic,
+    });
+
+    const step2 = await insertStep(
+      2,
+      "strategist",
+      `You are executing an approved performance step for the run topic below.
+
+Refine the action plan based on the risks raised. Tighten priorities, sequencing, and tradeoffs. Produce an updated, actionable plan the team can execute—not a repeat of the discussion stage; this is the post-approval execution track.
+
+--- Original approved plan ---
+${finalPlan}
+
+--- Analyst validation ---
+${analystOutput}
+
+--- Critic risk assessment ---
+${criticOutput}`,
+    );
+    if (!step2) throw new Error("insert step 2");
+    strategistOutput = await executePerformanceStep({
+      supabase,
+      stepRow: step2,
+      topic: run.topic,
+    });
+
+    const step3 = await insertStep(
+      3,
+      "executor",
+      `You are executing an approved performance step for the run topic below.
+
+Produce the final operator handoff checklist: bulleted concrete tasks, suggested owners by role, dependencies, blockers to surface early, and a clear definition of done.
+
+--- Refined action plan (Strategist output) ---
+${strategistOutput}
+
+--- Original approved plan (reference) ---
+${finalPlan}`,
+    );
+    if (!step3) throw new Error("insert step 3");
+    await executePerformanceStep({
+      supabase,
+      stepRow: step3,
+      topic: run.topic,
+    });
 
     const completedAt = new Date().toISOString();
     await supabase

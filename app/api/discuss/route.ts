@@ -229,7 +229,7 @@ export async function POST(request: Request) {
       enqueue({
         type: "discussion_complete",
         gateId: gate.id,
-        criticExcerpt: (lastRoundTexts.critic ?? "").slice(0, 1200),
+        criticExcerpt: lastRoundTexts.critic ?? "",
       });
     } catch (e) {
       console.error(e);

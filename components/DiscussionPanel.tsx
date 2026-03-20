@@ -17,6 +17,8 @@ type NdEvent =
 type Props = {
   runId: string;
   disabled?: boolean;
+  /** Latest saved turn per agent (e.g. from DB) when stream UI state is empty */
+  persistedTexts?: Record<string, string>;
   onDiscussionComplete?: (gateId: string, criticExcerpt: string) => void;
 };
 
@@ -25,6 +27,7 @@ const PIN_KEY = "stage:pins:";
 export function DiscussionPanel({
   runId,
   disabled,
+  persistedTexts = {},
   onDiscussionComplete,
 }: Props) {
   const [refine, setRefine] = useState(0);
@@ -82,33 +85,52 @@ export function DiscussionPanel({
       const decoder = new TextDecoder();
       let buffer = "";
 
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+      const handleEvent = (ev: NdEvent) => {
+        if (ev.type === "token") {
+          setTextByAgent((prev) => ({
+            ...prev,
+            [ev.agentId]: (prev[ev.agentId] ?? "") + ev.text,
+          }));
+        } else if (ev.type === "agent_round_complete") {
+          setTextByAgent((prev) => ({
+            ...prev,
+            [ev.agentId]: ev.text,
+          }));
+        } else if (ev.type === "discussion_complete") {
+          setDoneGate(ev.gateId);
+          onDiscussionComplete?.(ev.gateId, ev.criticExcerpt);
+        } else if (ev.type === "error") {
+          setError(ev.message);
+        }
+      };
+
+      const consumeBufferLines = () => {
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
-
         for (const line of lines) {
           if (!line.trim()) continue;
-          let ev: NdEvent;
           try {
-            ev = JSON.parse(line) as NdEvent;
+            handleEvent(JSON.parse(line) as NdEvent);
           } catch {
-            continue;
-          }
-          if (ev.type === "token") {
-            setTextByAgent((prev) => ({
-              ...prev,
-              [ev.agentId]: (prev[ev.agentId] ?? "") + ev.text,
-            }));
-          } else if (ev.type === "discussion_complete") {
-            setDoneGate(ev.gateId);
-            onDiscussionComplete?.(ev.gateId, ev.criticExcerpt);
-          } else if (ev.type === "error") {
-            setError(ev.message);
+            /* skip malformed line */
           }
         }
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+        consumeBufferLines();
+        if (done) break;
+      }
+
+      if (buffer.trim()) {
+        try {
+          handleEvent(JSON.parse(buffer) as NdEvent);
+        } catch {
+          /* trailing fragment without newline */
+        }
+        buffer = "";
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -178,7 +200,7 @@ export function DiscussionPanel({
         <p className="text-destructive font-mono text-sm">{error}</p>
       ) : null}
 
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid items-start gap-3 md:grid-cols-2 xl:grid-cols-4">
         {AGENTS.map((agent) => (
           <AgentCard
             key={agent.id}
@@ -192,9 +214,16 @@ export function DiscussionPanel({
               ) : null
             }
           >
-            {textByAgent[agent.id] || (
-              <span className="opacity-40">Waiting for spotlight…</span>
-            )}
+            {(() => {
+              const live = textByAgent[agent.id] ?? "";
+              const saved = persistedTexts[agent.id] ?? "";
+              const text = live || saved;
+              return text ? (
+                text
+              ) : (
+                <span className="opacity-40">Waiting for spotlight…</span>
+              );
+            })()}
           </AgentCard>
         ))}
       </div>

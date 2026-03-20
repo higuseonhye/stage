@@ -5,17 +5,36 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button-variants";
+import { Badge } from "@/components/ui/badge";
+import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  DEFAULT_EXAMPLE_ID,
+  STAGE_EXAMPLES,
+} from "@/lib/stage-examples";
+
+const defaultExample = STAGE_EXAMPLES.find((e) => e.id === DEFAULT_EXAMPLE_ID)!;
 
 export default function NewRunPage() {
   const router = useRouter();
-  const [topic, setTopic] = useState("");
-  const [userMessage, setUserMessage] = useState("");
+  const [topic, setTopic] = useState(defaultExample.topic);
+  const [userMessage, setUserMessage] = useState(defaultExample.brief);
+  const [selectedExampleId, setSelectedExampleId] = useState<string>(
+    DEFAULT_EXAMPLE_ID,
+  );
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  const applyExample = (id: string) => {
+    const ex = STAGE_EXAMPLES.find((e) => e.id === id);
+    if (!ex) return;
+    setSelectedExampleId(id);
+    setTopic(ex.topic);
+    setUserMessage(ex.brief);
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -42,7 +61,7 @@ export default function NewRunPage() {
   };
 
   return (
-    <div className="mx-auto max-w-xl px-4 py-8">
+    <div className="mx-auto max-w-2xl px-4 py-8">
       <Link
         href="/dashboard"
         className={cn(
@@ -53,10 +72,66 @@ export default function NewRunPage() {
         ← Runs
       </Link>
       <h1 className="mb-2 text-2xl font-semibold tracking-tight">New run</h1>
-      <p className="text-muted-foreground mb-8 text-sm">
+      <p className="text-muted-foreground mb-6 text-sm">
         Give the actors a topic and brief. You&apos;ll cue approval before
         anything executes.
       </p>
+
+      <div className="mb-8 space-y-3">
+        <h2 className="text-muted-foreground text-xs font-medium tracking-widest uppercase">
+          Example runs
+        </h2>
+        <p className="text-muted-foreground text-xs leading-relaxed">
+          Click a card to fill the form. See{" "}
+          <code className="text-foreground/90">STAGE_EXAMPLES.md</code> for full
+          copy.
+        </p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          {STAGE_EXAMPLES.map((ex) => {
+            const isDefault = ex.id === DEFAULT_EXAMPLE_ID;
+            const isSelected = selectedExampleId === ex.id;
+            return (
+              <button
+                key={ex.id}
+                type="button"
+                onClick={() => applyExample(ex.id)}
+                className={cn(
+                  "text-left transition-colors",
+                  "focus-visible:ring-ring rounded-xl focus-visible:ring-2 focus-visible:outline-none",
+                )}
+              >
+                <Card
+                  className={cn(
+                    "h-full overflow-visible border-2 p-4 shadow-none",
+                    isSelected && isDefault &&
+                      "border-emerald-600/60 bg-emerald-500/5 ring-2 ring-emerald-500/35",
+                    isSelected &&
+                      !isDefault &&
+                      "border-primary bg-primary/5 ring-2 ring-primary/35",
+                    !isSelected &&
+                      "border-border/80 bg-card/40 hover:border-border hover:bg-card/60",
+                  )}
+                >
+                  <div className="mb-2 flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-medium">{ex.title}</span>
+                    {isDefault ? (
+                      <Badge
+                        variant="secondary"
+                        className="bg-emerald-500/15 font-mono text-[10px] text-emerald-200/95 uppercase"
+                      >
+                        Default
+                      </Badge>
+                    ) : null}
+                  </div>
+                  <p className="text-muted-foreground text-xs leading-snug">
+                    {ex.topic}
+                  </p>
+                </Card>
+              </button>
+            );
+          })}
+        </div>
+      </div>
 
       <form onSubmit={submit} className="space-y-6">
         <div className="space-y-2">

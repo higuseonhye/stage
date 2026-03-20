@@ -64,7 +64,7 @@ export function streamAgentTurn(params: {
     model,
     system: params.agent.systemPrompt,
     prompt,
-    maxOutputTokens: 2048,
+    maxOutputTokens: 16_384,
   });
 }
 

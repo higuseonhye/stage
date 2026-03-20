@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 import { DiscussionPanel } from "@/components/DiscussionPanel";
@@ -11,6 +11,10 @@ import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button-variants";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
+import {
+  latestContentByAgent,
+  latestCriticContent,
+} from "@/lib/run-messages";
 
 export type RunRow = {
   id: string;
@@ -68,6 +72,16 @@ export function RunDetail({
 
   const discussDisabled =
     run.status !== "discussing" || gates.length > 0;
+
+  const persistedAgentTexts = useMemo(
+    () => latestContentByAgent(messages),
+    [messages],
+  );
+
+  const criticFromMessages = useMemo(
+    () => latestCriticContent(messages),
+    [messages],
+  );
 
   const refresh = useCallback(async () => {
     const supabase = createBrowserSupabaseClient();
@@ -194,6 +208,7 @@ export function RunDetail({
         <DiscussionPanel
           runId={runId}
           disabled={discussDisabled}
+          persistedTexts={persistedAgentTexts}
           onDiscussionComplete={(_, excerpt) => setCriticExcerpt(excerpt)}
         />
         {messages.length > 0 ? (
@@ -223,7 +238,7 @@ export function RunDetail({
         </h2>
         <ApprovalGate
           gate={pendingGate}
-          criticExcerpt={criticExcerpt}
+          criticExcerpt={criticExcerpt || criticFromMessages}
           runId={runId}
           onDecided={() => void refresh()}
         />
