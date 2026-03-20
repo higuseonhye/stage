@@ -2,6 +2,8 @@
 
 Use these on **New run** (`/runs/new`) as one-click starters. Example 1 is the default fill.
 
+**Copy used by the app:** [`lib/stage-examples.ts`](./lib/stage-examples.ts) must match this file verbatim (Topic + Brief per example).
+
 ---
 
 ## Example 1: Should we stop building and start selling first?
