@@ -21,6 +21,8 @@ const EVENTS = [
   "step_started",
   "step_completed",
   "run_completed",
+  "decision_memo_generated",
+  "decision_memo_failed",
 ] as const;
 
 type Props = {

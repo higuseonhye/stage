@@ -11,9 +11,15 @@ const links: { href: string; label: string; title?: string }[] = [
   { href: "/dashboard", label: "Runs" },
   { href: "/runs/new", label: "New run" },
   {
+    href: "/about",
+    label: "Why Stage",
+    title: "Wedge, governance, and how we think about the product",
+  },
+  {
     href: "/resources/decision-memo",
-    label: "Decision memo",
-    title: "Generic one-page decision template for any run",
+    label: "Memo template",
+    title:
+      "Printable blank one-pager — not your run’s AI memo. Open a completed run for the generated memo.",
   },
   { href: "/settings", label: "Settings" },
 ];

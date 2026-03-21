@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { userHasWorkspaceAccess } from "@/lib/workspace-access";
 import { executePerformanceStep } from "@/lib/execution";
+import {
+  buildPerformanceSummaryFromStepRows,
+  persistProjectContextAfterPerformance,
+} from "@/lib/context";
 import { persistDecisionMemoForRun } from "@/lib/persist-decision-memo";
 
 const bodySchema = z.object({
@@ -36,7 +41,7 @@ export async function POST(request: Request, context: RouteContext) {
 
   const { data: run } = await supabase
     .from("runs")
-    .select("id, workspace_id, topic, status")
+    .select("id, workspace_id, topic, status, user_message, project_id")
     .eq("id", runId)
     .maybeSingle();
 
@@ -44,13 +49,12 @@ export async function POST(request: Request, context: RouteContext) {
     return NextResponse.json({ error: "Run not found" }, { status: 404 });
   }
 
-  const { data: workspace } = await supabase
-    .from("workspaces")
-    .select("owner_id")
-    .eq("id", run.workspace_id)
-    .maybeSingle();
-
-  if (!workspace || workspace.owner_id !== user.id) {
+  const canAccess = await userHasWorkspaceAccess(
+    supabase,
+    user.id,
+    run.workspace_id,
+  );
+  if (!canAccess) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
@@ -115,6 +119,20 @@ export async function POST(request: Request, context: RouteContext) {
         payload: { after_retry: true },
       });
       await persistDecisionMemoForRun(supabase, runId);
+
+      if (run.project_id) {
+        const { data: stepRows } = await supabase
+          .from("execution_steps")
+          .select("step_index, agent_id, output")
+          .eq("run_id", runId)
+          .order("step_index", { ascending: true });
+        const summary = buildPerformanceSummaryFromStepRows({
+          topic: run.topic,
+          userMessage: run.user_message ?? "",
+          steps: stepRows ?? [],
+        });
+        await persistProjectContextAfterPerformance(supabase, runId, summary);
+      }
     }
 
     return NextResponse.json({ ok: true });

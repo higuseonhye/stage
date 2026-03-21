@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { agentById } from "@/lib/agents";
-import { getPerformanceModel, runAgentTurnText } from "@/lib/stream";
+import { runAgentTurnText } from "@/lib/stream";
 
 export async function executePerformanceStep(params: {
   supabase: SupabaseClient;
@@ -35,7 +35,7 @@ export async function executePerformanceStep(params: {
       userMessage: stepRow.input,
       round: 0,
       priorRoundTexts: {},
-      model: getPerformanceModel(),
+      tier: "performance",
     });
 
     const doneAt = new Date().toISOString();

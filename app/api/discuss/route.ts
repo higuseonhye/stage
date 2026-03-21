@@ -1,12 +1,14 @@
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { AGENTS } from "@/lib/agents";
-import {
-  getDiscussionModel,
-  getOpenAIFallbackModel,
-  streamAgentTurn,
-} from "@/lib/stream";
+import { getDiscussionModelsOrdered } from "@/lib/model-fallback";
+import { collectStreamedAssistantText, streamAgentTurn } from "@/lib/stream";
 import { evaluateDiscussionConvergence } from "@/lib/convergence";
 import { z } from "zod";
+import {
+  RateLimitExceededError,
+  enforceDiscussRateLimit,
+} from "@/lib/rate-limit";
+import { userHasWorkspaceAccess } from "@/lib/workspace-access";
 
 export const maxDuration = 300;
 
@@ -31,6 +33,15 @@ export async function POST(request: Request) {
     return new Response("Unauthorized", { status: 401 });
   }
 
+  try {
+    await enforceDiscussRateLimit(request, user.id);
+  } catch (e) {
+    if (e instanceof RateLimitExceededError) {
+      return new Response(e.message, { status: 429 });
+    }
+    throw e;
+  }
+
   let json: unknown;
   try {
     json = await request.json();
@@ -50,7 +61,7 @@ export async function POST(request: Request) {
 
   const { data: run, error: runError } = await supabase
     .from("runs")
-    .select("id, topic, user_message, status, workspace_id")
+    .select("id, topic, user_message, status, workspace_id, project_id")
     .eq("id", runId)
     .maybeSingle();
 
@@ -58,13 +69,12 @@ export async function POST(request: Request) {
     return new Response("Run not found", { status: 404 });
   }
 
-  const { data: workspace } = await supabase
-    .from("workspaces")
-    .select("owner_id")
-    .eq("id", run.workspace_id)
-    .maybeSingle();
-
-  if (!workspace || workspace.owner_id !== user.id) {
+  const canAccess = await userHasWorkspaceAccess(
+    supabase,
+    user.id,
+    run.workspace_id,
+  );
+  if (!canAccess) {
     return new Response("Forbidden", { status: 403 });
   }
 
@@ -96,6 +106,24 @@ export async function POST(request: Request) {
 
   void (async () => {
     try {
+      let systemPrefix = "";
+      if (run.project_id) {
+        const { data: project } = await supabase
+          .from("projects")
+          .select("context_snapshot")
+          .eq("id", run.project_id)
+          .maybeSingle();
+        const snap = project?.context_snapshot;
+        if (
+          snap &&
+          typeof snap === "object" &&
+          !Array.isArray(snap) &&
+          Object.keys(snap as object).length > 0
+        ) {
+          systemPrefix = `## Accumulated project context\n${JSON.stringify(snap, null, 2)}\n\n`;
+        }
+      }
+
       await supabase.from("audit_events").insert({
         run_id: runId,
         event_type: "discussion_started",
@@ -126,57 +154,64 @@ export async function POST(request: Request) {
           maxRounds: MAX_DISCUSSION_ROUNDS,
         });
 
-        await Promise.all(
-          AGENTS.map(async (agent) => {
-            let full = "";
-            const tryStream = async (useFallback: boolean) => {
-              const model = useFallback
-                ? getOpenAIFallbackModel() ?? getDiscussionModel()
-                : getDiscussionModel();
+        // Sequential agents avoid concurrent stream limits on some providers (empty deltas).
+        for (const agent of AGENTS) {
+          let full = "";
+          const models = getDiscussionModelsOrdered();
+          if (models.length === 0) {
+            throw new Error(
+              "No AI providers configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, or GOOGLE_GENERATIVE_AI_API_KEY / GEMINI_API_KEY.",
+            );
+          }
+          for (let mi = 0; mi < models.length; mi++) {
+            try {
               const result = streamAgentTurn({
                 agent,
                 topic: run.topic,
                 userMessage: run.user_message,
                 round,
                 priorRoundTexts: priorRound,
-                model,
+                model: models[mi],
+                systemPrefix: systemPrefix || undefined,
               });
-              try {
-                for await (const part of result.textStream) {
-                  full += part;
-                  enqueue({
-                    type: "token",
-                    agentId: agent.id,
-                    round,
-                    text: part,
-                  });
-                }
-              } catch {
-                if (!useFallback && getOpenAIFallbackModel()) {
-                  full = "";
-                  await tryStream(true);
-                } else {
-                  throw new Error("Agent stream failed");
-                }
+              full = await collectStreamedAssistantText(result, (chunk) => {
+                enqueue({
+                  type: "token",
+                  agentId: agent.id,
+                  round,
+                  text: chunk,
+                });
+              });
+              if (!full.trim()) {
+                throw new Error("Empty model response");
               }
-            };
-            await tryStream(false);
+              break;
+            } catch (e) {
+              if (mi < models.length - 1) {
+                console.warn(
+                  `[ai] discuss stream fallback ${mi + 1}→${mi + 2}/${models.length}:`,
+                  e instanceof Error ? e.message : e,
+                );
+                continue;
+              }
+              throw e instanceof Error ? e : new Error(String(e));
+            }
+          }
 
-            enqueue({
-              type: "agent_round_complete",
-              agentId: agent.id,
-              round,
-              text: full,
-            });
+          enqueue({
+            type: "agent_round_complete",
+            agentId: agent.id,
+            round,
+            text: full,
+          });
 
-            allMessages.push({
-              agent_id: agent.id,
-              agent_name: agent.name,
-              content: full,
-              round,
-            });
-          }),
-        );
+          allMessages.push({
+            agent_id: agent.id,
+            agent_name: agent.name,
+            content: full,
+            round,
+          });
+        }
 
         const currentRound: Record<string, string> = Object.fromEntries(
           AGENTS.map((a) => {

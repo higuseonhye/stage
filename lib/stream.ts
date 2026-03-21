@@ -1,46 +1,76 @@
 import { streamText, type LanguageModel } from "ai";
-import { createAnthropic } from "@ai-sdk/anthropic";
+
+/** Result of `streamText` — used to collect text from `fullStream` + fallbacks. */
+type StreamTextInvocationResult = ReturnType<typeof streamText>;
+
+/**
+ * Collect assistant text from a streamText result. Prefer `fullStream` (text-delta)
+ * so we do not miss content when `textStream` is empty for some providers.
+ * If still empty, use aggregated `text` / `reasoningText`.
+ */
+export async function collectStreamedAssistantText(
+  result: StreamTextInvocationResult,
+  onTextDelta?: (chunk: string) => void,
+): Promise<string> {
+  let full = "";
+  for await (const part of result.fullStream) {
+    if (part.type === "error") {
+      throw part.error instanceof Error
+        ? part.error
+        : new Error(String(part.error));
+    }
+    if (part.type === "text-delta" && part.text.length > 0) {
+      full += part.text;
+      onTextDelta?.(part.text);
+    }
+  }
+  if (!full.trim()) {
+    try {
+      full = await result.text;
+    } catch {
+      /* final step may fail if stream errored */
+    }
+  }
+  if (!full.trim()) {
+    try {
+      const r = await result.reasoningText;
+      if (r?.trim()) full = r;
+    } catch {
+      /* ignore */
+    }
+  }
+  return full;
+}
 import { createOpenAI } from "@ai-sdk/openai";
 import type { AgentDefinition } from "@/lib/agents";
+import {
+  getDiscussionModelsOrdered,
+  getPerformanceModelsOrdered,
+} from "@/lib/model-fallback";
 
-function requireAnthropicOrFallback(): {
-  anthropic: ReturnType<typeof createAnthropic> | null;
-  openai: ReturnType<typeof createOpenAI> | null;
-} {
-  const ak = process.env.ANTHROPIC_API_KEY;
-  const ok = process.env.OPENAI_API_KEY;
-  return {
-    anthropic: ak ? createAnthropic({ apiKey: ak }) : null,
-    openai: ok ? createOpenAI({ apiKey: ok }) : null,
-  };
+function requireAnyModel(
+  kind: "discussion" | "performance",
+): LanguageModel {
+  const models =
+    kind === "discussion"
+      ? getDiscussionModelsOrdered()
+      : getPerformanceModelsOrdered();
+  if (!models.length) {
+    throw new Error(
+      "No AI providers configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, or GOOGLE_GENERATIVE_AI_API_KEY / GEMINI_API_KEY.",
+    );
+  }
+  return models[0];
 }
 
-/** Discussion + adaptive convergence (default: claude-haiku-4-5) */
+/** Discussion + adaptive convergence (default: claude-haiku-4-5); falls back via model chain at call sites. */
 export function getDiscussionModel(): LanguageModel {
-  const { anthropic, openai } = requireAnthropicOrFallback();
-  const id =
-    process.env.DISCUSSION_MODEL?.trim() || "claude-haiku-4-5";
-  if (anthropic) return anthropic(id);
-  if (openai) {
-    return openai(process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini");
-  }
-  throw new Error(
-    "Set ANTHROPIC_API_KEY for discussion models, or OPENAI_API_KEY as fallback.",
-  );
+  return requireAnyModel("discussion");
 }
 
-/** Performance pipeline steps (default: claude-sonnet-4-6) */
+/** Performance pipeline (default: claude-sonnet-4-6); falls back via model chain at call sites. */
 export function getPerformanceModel(): LanguageModel {
-  const { anthropic, openai } = requireAnthropicOrFallback();
-  const id =
-    process.env.PERFORMANCE_MODEL?.trim() || "claude-sonnet-4-6";
-  if (anthropic) return anthropic(id);
-  if (openai) {
-    return openai(process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini");
-  }
-  throw new Error(
-    "Set ANTHROPIC_API_KEY for performance models, or OPENAI_API_KEY as fallback.",
-  );
+  return requireAnyModel("performance");
 }
 
 /** @deprecated Prefer getDiscussionModel / getPerformanceModel */
@@ -48,6 +78,7 @@ export function getLanguageModel(): LanguageModel {
   return getDiscussionModel();
 }
 
+/** OpenAI only — used when caller wants explicit OpenAI (legacy). */
 export function getOpenAIFallbackModel(): LanguageModel | null {
   const ok = process.env.OPENAI_API_KEY;
   if (!ok) return null;
@@ -80,6 +111,8 @@ export function streamAgentTurn(params: {
   round: number;
   priorRoundTexts: Record<string, string>;
   model?: LanguageModel;
+  /** Prepended to the agent system prompt (e.g. accumulated project context). */
+  systemPrefix?: string;
 }) {
   const prompt = buildUserPrompt({
     topic: params.topic,
@@ -88,9 +121,12 @@ export function streamAgentTurn(params: {
     priorRoundTexts: params.priorRoundTexts,
   });
   const model = params.model ?? getDiscussionModel();
+  const system = params.systemPrefix?.trim()
+    ? `${params.systemPrefix.trim()}\n\n${params.agent.systemPrompt}`
+    : params.agent.systemPrompt;
   return streamText({
     model,
-    system: params.agent.systemPrompt,
+    system,
     prompt,
     maxOutputTokens: 16_384,
   });
@@ -101,26 +137,44 @@ export type AgentTurnParams = Omit<
   "model"
 > & { model?: LanguageModel };
 
-export async function runAgentTurnText(params: AgentTurnParams): Promise<string> {
-  let text = "";
-  const attempt = async (useFallback: boolean) => {
-    const primary = params.model ?? getDiscussionModel();
-    const model = useFallback
-      ? getOpenAIFallbackModel() ?? primary
-      : primary;
-    const result = streamAgentTurn({ ...params, model });
-    for await (const part of result.textStream) {
-      text += part;
-    }
-  };
-  try {
-    await attempt(false);
-  } catch {
-    if (!getOpenAIFallbackModel()) {
-      throw new Error("Model stream failed");
-    }
-    text = "";
-    await attempt(true);
+export async function runAgentTurnText(
+  params: AgentTurnParams & {
+    tier?: "discussion" | "performance";
+  },
+): Promise<string> {
+  const tier = params.tier ?? "discussion";
+  const models =
+    tier === "performance"
+      ? getPerformanceModelsOrdered()
+      : getDiscussionModelsOrdered();
+  if (!models.length) {
+    throw new Error(
+      "No AI providers configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, or GOOGLE_GENERATIVE_AI_API_KEY / GEMINI_API_KEY.",
+    );
   }
-  return text;
+  let lastErr: unknown;
+  for (let i = 0; i < models.length; i++) {
+    try {
+      const result = streamAgentTurn({
+        ...params,
+        model: models[i],
+      });
+      const text = await collectStreamedAssistantText(result);
+      if (!text.trim()) {
+        throw new Error("Empty model response");
+      }
+      return text;
+    } catch (e) {
+      lastErr = e;
+      if (i < models.length - 1) {
+        console.warn(
+          `[ai] runAgentTurnText ${tier} fallback ${i + 1}→${i + 2}/${models.length}:`,
+          e instanceof Error ? e.message : e,
+        );
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr;
 }

@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
+import { SettingsWorkspaceInvites } from "@/components/SettingsWorkspaceInvites";
 
 const THEME_KEY = "stage-light-mode";
 
@@ -87,11 +88,18 @@ export default function SettingsPage() {
           </p>
         </div>
 
+        <Separator />
+
+        <SettingsWorkspaceInvites />
+
+        <Separator />
+
         <div>
-          <h2 className="mb-2 text-sm font-medium">Workspace</h2>
+          <h2 className="mb-2 text-sm font-medium">Your workspace</h2>
           <p className="text-muted-foreground text-xs leading-relaxed">
-            MVP uses one workspace per account, created automatically on your
-            first run.
+            Each account has a default workspace (created on first run).
+            Invited members work inside the owner&apos;s workspace when they use
+            an invite link.
           </p>
         </div>
 

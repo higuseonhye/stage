@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 /** Columns from initial migration — always safe to select */
 const RUN_BASE_FIELDS =
-  "id, topic, user_message, status, created_at, completed_at, workspace_id" as const;
+  "id, topic, user_message, status, created_at, completed_at, workspace_id, project_id" as const;
 
 export type RunPageRow = {
   id: string;
@@ -12,6 +12,7 @@ export type RunPageRow = {
   created_at: string;
   completed_at: string | null;
   workspace_id: string;
+  project_id: string | null;
   decision_memo_markdown: string | null;
 };
 
@@ -49,7 +50,10 @@ export async function fetchRunForPage(
   }
 
   return {
-    data: { ...run, decision_memo_markdown },
+    data: {
+      ...run,
+      decision_memo_markdown,
+    } as RunPageRow,
     error: null,
   };
 }

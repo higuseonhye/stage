@@ -11,10 +11,18 @@ import {
   countRunsForQuestion,
   MAX_RUNS_PER_QUESTION,
 } from "@/lib/question-run-limit";
+import {
+  contextGraphSchema,
+  initialSnapshotFromGraph,
+  isSnapshotSeedableEmpty,
+} from "@/lib/context-graph";
 
 const createSchema = z.object({
   topic: z.string().min(1).max(2000),
   userMessage: z.string().max(8000).optional().default(""),
+  projectId: z.string().uuid().optional(),
+  /** If the linked project has an empty snapshot, seed it from this graph. */
+  contextGraph: contextGraphSchema.optional(),
 });
 
 export async function POST(request: Request) {
@@ -41,9 +49,35 @@ export async function POST(request: Request) {
     );
   }
 
-  const { topic, userMessage } = parsed.data;
+  const { topic, userMessage, projectId, contextGraph } = parsed.data;
 
   try {
+    if (projectId) {
+      const { data: proj, error: pe } = await supabase
+        .from("projects")
+        .select("id, context_snapshot")
+        .eq("id", projectId)
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (pe || !proj) {
+        return NextResponse.json(
+          { error: "Invalid or unknown project" },
+          { status: 400 },
+        );
+      }
+      if (
+        contextGraph &&
+        isSnapshotSeedableEmpty(proj.context_snapshot)
+      ) {
+        await supabase
+          .from("projects")
+          .update({
+            context_snapshot: initialSnapshotFromGraph(contextGraph),
+          })
+          .eq("id", projectId);
+      }
+    }
+
     const usedToday = await countRunsCreatedSinceUtc(
       supabase,
       user.id,
@@ -82,6 +116,7 @@ export async function POST(request: Request) {
         topic,
         user_message: userMessage,
         status: "discussing",
+        project_id: projectId ?? null,
       })
       .select("id")
       .single();
@@ -91,7 +126,7 @@ export async function POST(request: Request) {
     await supabase.from("audit_events").insert({
       run_id: run.id,
       event_type: "run_started",
-      payload: { topic, user_id: user.id },
+      payload: { topic, user_id: user.id, project_id: projectId ?? null },
     });
 
     return NextResponse.json({ id: run.id });

@@ -7,9 +7,9 @@ import { buttonVariants } from "@/components/ui/button-variants";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = {
-  title: "Decision memo — one page",
+  title: "Memo template — printable one-pager",
   description:
-    "Generic printable one-pager for any Stage run: options, risks, decision, sign-off.",
+    "Blank printable template (not your run’s AI memo). Generated memos live on each completed run.",
 };
 
 export default async function DecisionMemoPage() {
@@ -38,6 +38,13 @@ export default async function DecisionMemoPage() {
           First hire add-on →
         </Link>
       </div>
+      <p className="text-muted-foreground border-border/60 bg-muted/20 mb-6 rounded-lg border px-4 py-3 text-sm leading-relaxed">
+        This page is a <strong className="text-foreground/90">static blank</strong>{" "}
+        you can print or copy. Your{" "}
+        <strong className="text-foreground/90">AI-generated decision memo</strong>{" "}
+        is saved per run on the run detail page after the pipeline finishes — it
+        does not appear here automatically.
+      </p>
       <MemoMarkdown source={source} />
     </div>
   );

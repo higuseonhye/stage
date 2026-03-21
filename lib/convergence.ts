@@ -1,5 +1,4 @@
-import { generateText } from "ai";
-import { getDiscussionModel } from "@/lib/stream";
+import { generateTextWithModelFallback } from "@/lib/model-fallback";
 
 const AGENT_ORDER = ["analyst", "critic", "strategist", "executor"] as const;
 
@@ -63,10 +62,10 @@ export async function evaluateDiscussionConvergence(params: {
   previousRound: Record<string, string>;
   currentRound: Record<string, string>;
 }): Promise<FullConvergence> {
-  const { text } = await generateText({
-    model: getDiscussionModel(),
-    maxOutputTokens: 1024,
-    prompt: `You compare two consecutive discussion rounds from a four-agent panel (analyst, critic, strategist, executor).
+  const { text } = await generateTextWithModelFallback(
+    {
+      maxOutputTokens: 1024,
+      prompt: `You compare two consecutive discussion rounds from a four-agent panel (analyst, critic, strategist, executor).
 
 ## Previous round
 ${formatRound(params.previousRound)}
@@ -81,7 +80,9 @@ Return ONLY a single JSON object (no markdown fences, no prose) with exactly the
 - "per_agent": object with keys "analyst", "critic", "strategist", "executor" — each an integer 0-100 for how much THAT actor's message improved vs their previous-round message (rephrasing with no new substance = low score)
 
 Example shape: {"improvement":45,"critic_new_objections":true,"strategist_new_options":false,"per_agent":{"analyst":60,"critic":30,"strategist":55,"executor":20}}`,
-  });
+    },
+    "discussion",
+  );
 
   const parsed = extractJsonObject(text);
   const obj =

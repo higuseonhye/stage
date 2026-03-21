@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { persistDecisionMemoForRun } from "@/lib/persist-decision-memo";
+import { userHasWorkspaceAccess } from "@/lib/workspace-access";
 
 export const maxDuration = 300;
 
@@ -26,13 +27,12 @@ export async function POST(_request: Request, context: RouteContext) {
     return NextResponse.json({ error: "Run not found" }, { status: 404 });
   }
 
-  const { data: workspace } = await supabase
-    .from("workspaces")
-    .select("owner_id")
-    .eq("id", run.workspace_id)
-    .maybeSingle();
-
-  if (!workspace || workspace.owner_id !== user.id) {
+  const canAccess = await userHasWorkspaceAccess(
+    supabase,
+    user.id,
+    run.workspace_id,
+  );
+  if (!canAccess) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 

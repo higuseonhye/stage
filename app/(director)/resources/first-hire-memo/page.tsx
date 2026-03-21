@@ -39,7 +39,7 @@ export default async function FirstHireMemoPage() {
             "text-muted-foreground",
           )}
         >
-          Generic decision memo →
+          Generic memo template →
         </Link>
       </div>
       <MemoMarkdown source={source} />

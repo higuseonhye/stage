@@ -1,17 +1,46 @@
 # Stage
 
-**AI agents on stage — you direct.** Four actors (Analyst, Critic, Strategist, Executor) discuss in parallel on the **stage**; you hold the **cue** (approve, deny, or edit) before **performance** runs; the **script** is an append-only audit log with realtime updates.
+**AI agents on stage — you direct.** Four actors (Analyst, Critic, Strategist, Executor) discuss in adaptive rounds; you hold the **cue** (approve, deny, or edit) before **performance** runs; the **script** is an append-only audit log with realtime updates. The **decision memo** is the final artifact — generated from discussion, cue, and execution, exportable as Markdown.
+
+## Wedge (why this exists)
+
+Autonomy is cheap; **governance** is not. Stage optimizes for **human approval before execution**, **traceability** (audit + memo lineage), and **honest limits** (quotas, optional rate limits, model fallback). Positioning for US/global buyers who ask for receipts — not another chat wrapper.
+
+Public story: [`/about`](./app/about/page.tsx). Landing: [`/`](./app/page.tsx).
 
 ## What you get
 
-- Email auth (Supabase), one workspace per account, run list + run detail  
-- **Discussion:** NDJSON stream, **adaptive rounds** (up to 5). After each round, `DISCUSSION_MODEL` (default Haiku) returns JSON with panel-wide improvement (0–100), per-actor deltas, and critic/strategist “new content” flags. **Stop** when (a) improvement &lt; 10 for **two** consecutive rounds, (b) critic has no new objections **and** strategist adds no new options, or (c) 5 rounds. UI: round label, **+Δ badges** per actor, **stop banner**, and after completion a **recharts** bar chart of refinement by round. Agent cards use **fixed max height + internal scroll**; at-a-glance summaries are heuristic (first ~chars), not a second LLM call.  
-- **Cue:** approval gate with critic context + **outline / skim** lines + scrollable full plan  
-- **Performance:** **four sequential steps** after approve — (1) **Analyst** — validate / stress-test plan → (2) **Critic** — risks using analyst + plan → (3) **Strategist** — refined plan from analyst + critic + plan → (4) **Executor** — operator checklist from strategist output. Each step’s output is the next step’s context. Uses **`PERFORMANCE_MODEL`** (default Sonnet).  
-- **New run:** **3 runs per question** (same normalized topic + brief) **and** a **daily** cap (default **20 runs / UTC day** across all questions; set `MAX_RUNS_PER_DAY` in `.env`). `GET /api/runs/quota?topic=&userMessage=` returns both. **429** if either limit is hit.  
-- Example copy: [`STAGE_EXAMPLES.md`](./STAGE_EXAMPLES.md) ↔ [`lib/stage-examples.ts`](./lib/stage-examples.ts)  
-- **Decision memo:** [`docs/decision-memo.md`](./docs/decision-memo.md) is still the **blank** printable template (`/resources/decision-memo`). When a run **ends** — **deny** at the cue, or **approve** and performance completes (including after **retry** clears the last failed step) — `persistDecisionMemoForRun` generates Markdown (`PERFORMANCE_MODEL`) and **writes** `runs.decision_memo_markdown` (deny memos state non-approval and skip fabricated execution). Shown on the run page under **Decision memo — generated**. Failures emit `decision_memo_failed` in the audit log.  
-- **First hire add-on:** [`docs/first-hire-decision-memo.md`](./docs/first-hire-decision-memo.md) ↔ `/resources/first-hire-memo` when that example applies  
+- Email auth (Supabase), one workspace per account, **projects** (optional) with **`context_snapshot`** merged after each completed performance — see [`docs/context-reconstruction-engine.md`](./docs/context-reconstruction-engine.md).
+- **Context layer:** one line → AI-filled graph → confirm/refine — [`/api/context/infer`](./app/api/context/infer/route.ts), [`/api/context/refine`](./app/api/context/refine/route.ts).
+- **Discussion:** NDJSON stream, adaptive rounds (up to 5), convergence scoring, refinement chart.
+- **Cue:** approval gate with critic context and full plan.
+- **Performance:** four sequential steps after approve; retry on failure.
+- **Quotas:** 3 runs per normalized question + daily cap (`MAX_RUNS_PER_DAY`, UTC). `GET /api/runs/quota`.
+- **Decision memo:** persisted on `runs.decision_memo_markdown`; copy / download Markdown, print, or PDF on the run page; optional **generation timestamp** from audit `decision_memo_generated`.
+- **Team invites (MVP):** workspace owner creates links in **Settings** (`GET`/`POST` [`/api/workspace/invites`](./app/api/workspace/invites/route.ts)); invitees open [`/invite/[token]`](./app/invite/%5Btoken%5D/page.tsx) and accept after sign-in. Set `NEXT_PUBLIC_APP_URL` so copied invite URLs match production.
+- **Memo template:** [`/resources/decision-memo`](./app/(director)/resources/decision-memo/page.tsx) — blank printable only; not auto-filled from runs.
+
+## AI providers (cascade)
+
+Order: **Anthropic** (`ANTHROPIC_API_KEY`) → **OpenAI** → **Groq** → **Google Gemini**. Missing keys are skipped. Used for discussion streaming, convergence, performance steps, context infer/refine, and decision memo generation (`generateTextWithModelFallback` / `generateObjectWithModelFallback` where applicable).
+
+See [`lib/model-fallback.ts`](./lib/model-fallback.ts) and [`lib/stream.ts`](./lib/stream.ts).
+
+## Observability & limits (production)
+
+| Mechanism | Purpose |
+|-----------|---------|
+| **Sentry** | Set `SENTRY_DSN` and/or `NEXT_PUBLIC_SENTRY_DSN`. Server + edge + client via `instrumentation*.ts`. |
+| **Upstash Redis** | Set `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` to enable sliding-window limits on `POST /api/discuss` and `POST /api/context/*`. Without Redis, limits are skipped (fine for local dev). |
+| **Error UI** | `app/error.tsx`, `app/global-error.tsx` — user-facing recovery + Sentry capture. |
+
+## Tests
+
+```bash
+npm test
+```
+
+Vitest + [`lib/question-run-limit.test.ts`](./lib/question-run-limit.test.ts). Add more pure-logic tests under `lib/**/*.test.ts`.
 
 ## Stack
 
@@ -19,14 +48,14 @@
 |--------|--------|
 | App | Next.js (App Router), TypeScript, Tailwind, shadcn/ui |
 | Data / auth | Supabase Postgres, Auth, Realtime |
-| AI | Vercel AI SDK — `DISCUSSION_MODEL` (panel + convergence), `PERFORMANCE_MODEL` (execution); OpenAI optional fallback |
-| Charts | recharts (refinement quality after discussion) |
+| AI | Vercel AI SDK — multi-provider cascade (see above) |
+| Charts | recharts |
 
 ## Setup
 
-1. **Env** — `cp .env.example` → `.env.local`. Set `NEXT_PUBLIC_SUPABASE_*`, `ANTHROPIC_API_KEY`, and optionally `DISCUSSION_MODEL` / `PERFORMANCE_MODEL`.
+1. **Env** — `cp .env.example` → `.env.local`. Set `NEXT_PUBLIC_SUPABASE_*`, at least one AI provider key.
 
-2. **Database** — Run [`supabase/migrations/20250320060000_init.sql`](./supabase/migrations/20250320060000_init.sql) (includes `runs.decision_memo_markdown` and an idempotent `add column if not exists` for older DBs). Enable **Email** auth.
+2. **Database** — Run [`supabase/migrations/20250320060000_init.sql`](./supabase/migrations/20250320060000_init.sql), then additive migrations: [`20250320120000_run_decision_memo.sql`](./supabase/migrations/20250320120000_run_decision_memo.sql), [`20250320140000_projects.sql`](./supabase/migrations/20250320140000_projects.sql), [`20250321180000_workspace_team.sql`](./supabase/migrations/20250321180000_workspace_team.sql) (team invites + shared workspace access). Enable **Email** auth.
 
 3. **Dev**
 
@@ -35,31 +64,34 @@
    npm run dev
    ```
 
-4. **Deploy** — Same env. `POST /api/discuss` and `POST /api/approve` use `maxDuration = 300`; Hobby caps are lower — upgrade or use a queue for heavy jobs.
+4. **Deploy** — Same env. `POST /api/discuss` and `POST /api/approve` use `maxDuration = 300`; verify your host’s serverless timeout. Optional: Sentry + Upstash for production hardening.
 
 ## Routes
 
 | Path | Purpose |
 |------|---------|
 | `/` | Landing |
+| `/about` | Product story & wedge (public) |
 | `/login`, `/signup` | Auth |
-| `/dashboard` | Runs |
-| `/runs/new` | New run + **daily** quota + examples |
-| `/runs/[id]` | Stage, cue, performance, script |
-| `/resources/decision-memo` | Generic one-page decision memo |
-| `/resources/first-hire-memo` | First-hire add-on memo |
-| `/settings` | Theme + env reminder |
+| `/dashboard` | Runs (onboarding banner on first visit) |
+| `/runs/new` | New run + quota + examples |
+| `/runs/[id]` | Stage, cue, performance, memo, script |
+| `/resources/decision-memo` | Blank memo template |
+| `/settings` | Theme, team invites (owner), env reminder |
+| `/invite/[token]` | Accept workspace invite (public) |
 
 ## API (cookie session)
 
-| Method | Path | Role |
+| Method | Path | Notes |
 |--------|------|------|
-| `GET` | `/api/runs/quota?topic=&userMessage=` | `{ daily: { limit, used, remaining, resetsAt }, question: { limit: 3, used, remaining, applies } }` |
-| `POST` | `/api/runs` | Create run; **429** if daily cap reached or **3 runs already** for this question |
-| `POST` | `/api/discuss` | NDJSON stream: `round_start`, `token`, `agent_round_complete`, `convergence` (includes `perAgentScores`), `discussion_complete` (adds `refinementByAgent`, `improvementSeries`, `stopReason`, `finalRound`, …) |
-| `POST` | `/api/approve` | Approve / deny / edit+approve; runs **4-step** performance pipeline (sequential, chained inputs) |
-| `POST` | `/api/runs/[id]/retry-step` | Retry failed step — `{ "stepId" }` |
-| `POST` | `/api/runs/reset` | Body `{ "confirm": "DELETE_ALL_RUNS" }` — delete every run in the workspace (cascade). Settings UI. |
+| `GET` | `/api/runs/quota?topic=&userMessage=` | Daily + per-question quota |
+| `POST` | `/api/runs` | Create run — **429** if capped |
+| `POST` | `/api/discuss` | NDJSON stream — **429** if rate limited (when Upstash set) |
+| `POST` | `/api/context/infer`, `/api/context/refine` | **429** if rate limited |
+| `POST` | `/api/approve` | Approve / deny / edit+approve; performance pipeline |
+| `GET` | `/api/workspace/invites` | List pending invites (owner) |
+| `POST` | `/api/workspace/invites` | Create invite link (owner) |
+| `POST` | `/api/workspace/invites/accept` | Accept invite (`{ token }`) |
 
 ## Product language
 
@@ -75,14 +107,13 @@
 ## Repo layout (important bits)
 
 ```text
-app/api/runs/quota/route.ts   # GET — daily + per-question quota
-lib/daily-run-quota.ts        # MAX_RUNS_PER_DAY (env, default 20), UTC midnight
-lib/question-run-limit.ts     # MAX_RUNS_PER_QUESTION (3), normalized topic+brief
-lib/stream.ts                 # DISCUSSION_MODEL / PERFORMANCE_MODEL
-lib/convergence.ts            # adaptive judge (generateText → JSON)
-lib/execution.ts              # performance steps (PERFORMANCE_MODEL)
-components/RefinementChart.tsx
-components/DiscussionPanel.tsx
+lib/model-fallback.ts       # Provider cascade
+lib/rate-limit.ts           # Optional Upstash limits
+lib/context.ts              # Project snapshot merge
+lib/stream.ts               # Discussion / performance streaming
+instrumentation.ts          # Sentry (Node + edge)
+instrumentation-client.ts   # Sentry browser
+app/error.tsx               # Route error boundary
 ```
 
 Supabase: `@/lib/supabase/browser` (client) vs `@/lib/supabase/server` (server only).

@@ -1,8 +1,7 @@
-import { generateText } from "ai";
 import { agentById, AGENTS } from "@/lib/agents";
 import type { AgentMessageLike } from "@/lib/run-messages";
 import { latestContentByAgent } from "@/lib/run-messages";
-import { getPerformanceModel } from "@/lib/stream";
+import { generateTextWithModelFallback } from "@/lib/model-fallback";
 
 export type ExecutionStepSlice = {
   step_index: number;
@@ -78,11 +77,11 @@ Rules:
       ? "## Performance pipeline outputs\n_(None — cue was denied before execution.)_"
       : `## Performance pipeline outputs\n${performance}`;
 
-  const { text } = await generateText({
-    model: getPerformanceModel(),
-    maxOutputTokens: 12_288,
-    system: cueOutcome === "denied" ? systemDenied : systemApproved,
-    prompt: `## Topic
+  const { text } = await generateTextWithModelFallback(
+    {
+      maxOutputTokens: 12_288,
+      system: cueOutcome === "denied" ? systemDenied : systemApproved,
+      prompt: `## Topic
 ${params.topic}
 
 ## Director brief
@@ -100,7 +99,9 @@ ${params.directorNote?.trim() || "(none)"}
 ${performanceSection}
 
 Write the full decision memo now.`,
-  });
+    },
+    "performance",
+  );
 
   return text.trim();
 }

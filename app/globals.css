@@ -169,3 +169,28 @@
     @apply bg-muted/40 font-medium text-foreground;
   }
 }
+
+/* Decision memo: print / save as PDF from browser */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .print-decision-memo,
+  .print-decision-memo * {
+    visibility: visible;
+  }
+  .print-decision-memo {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    max-height: none !important;
+    overflow: visible !important;
+    border: none !important;
+    box-shadow: none !important;
+    background: white !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+}

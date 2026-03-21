@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Stage — AI agents on stage, you direct",
   description:
-    "Parallel AI discussion, human approval gate, execution timeline, and audit script.",
+    "Human approval before execution, auditable script, decision memo as artifact. Governance-first AI panel for directors who need receipts.",
 };
 
 export default function RootLayout({

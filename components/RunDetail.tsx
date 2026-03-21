@@ -1,13 +1,23 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 import { DiscussionPanel } from "@/components/DiscussionPanel";
 import { ApprovalGate } from "@/components/ApprovalGate";
 import { MemoMarkdown } from "@/components/MemoMarkdown";
 import { ExecutionTimeline, type StepRow } from "@/components/ExecutionTimeline";
 import { AuditLog, type AuditRow } from "@/components/AuditLog";
+import { DecisionMemoLineage } from "@/components/DecisionMemoLineage";
+
+const DecisionMemoExport = dynamic(
+  () =>
+    import("@/components/DecisionMemoExport").then((mod) => ({
+      default: mod.DecisionMemoExport,
+    })),
+  { ssr: false },
+);
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button-variants";
@@ -17,6 +27,20 @@ import {
   latestContentByAgent,
   latestCriticContent,
 } from "@/lib/run-messages";
+
+function formatUtcTimestamp(iso: string) {
+  try {
+    return (
+      new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short",
+        timeZone: "UTC",
+      }).format(new Date(iso)) + " UTC"
+    );
+  } catch {
+    return iso;
+  }
+}
 
 export type RunRow = {
   id: string;
@@ -48,6 +72,8 @@ export type GateRow = {
 
 type Props = {
   runId: string;
+  /** Linked project name when run was created under a project */
+  projectName?: string | null;
   initialRun: RunRow;
   initialMessages: AgentMessageRow[];
   initialGates: GateRow[];
@@ -57,6 +83,7 @@ type Props = {
 
 export function RunDetail({
   runId,
+  projectName,
   initialRun,
   initialMessages,
   initialGates,
@@ -71,6 +98,7 @@ export function RunDetail({
   const [criticExcerpt, setCriticExcerpt] = useState("");
   const [memoBusy, setMemoBusy] = useState(false);
   const [memoError, setMemoError] = useState<string | null>(null);
+  const memoPrintRef = useRef<HTMLDivElement>(null);
 
   const pendingGate =
     gates.find((g) => g.status === "pending") ?? null;
@@ -87,6 +115,15 @@ export function RunDetail({
     () => latestCriticContent(messages),
     [messages],
   );
+
+  /** Latest successful memo write from audit (covers regenerate). */
+  const decisionMemoGeneratedAt = useMemo(() => {
+    const rows = audit.filter((e) => e.event_type === "decision_memo_generated");
+    if (rows.length === 0) return null;
+    return rows.reduce((latest, e) =>
+      new Date(e.created_at) > new Date(latest.created_at) ? e : latest,
+    ).created_at;
+  }, [audit]);
 
   const refresh = useCallback(async () => {
     const supabase = createBrowserSupabaseClient();
@@ -239,6 +276,12 @@ export function RunDetail({
             ← Runs
           </Link>
           <h1 className="text-2xl font-semibold tracking-tight">{run.topic}</h1>
+          {projectName ? (
+            <p className="text-muted-foreground mt-1 text-sm">
+              Project:{" "}
+              <span className="text-foreground/90 font-medium">{projectName}</span>
+            </p>
+          ) : null}
           {run.user_message ? (
             <p className="text-muted-foreground mt-2 max-w-2xl text-sm leading-relaxed">
               {run.user_message}
@@ -250,7 +293,146 @@ export function RunDetail({
         </Badge>
       </div>
 
-      <section className="space-y-3">
+      {run.status === "completed" ? (
+        <div
+          className={
+            run.decision_memo_markdown?.trim()
+              ? "border-primary/35 bg-primary/[0.06] rounded-xl border px-4 py-3"
+              : "border-border/70 bg-muted/20 rounded-xl border border-dashed px-4 py-3"
+          }
+        >
+          <p className="text-foreground text-sm font-medium">
+            {run.decision_memo_markdown?.trim()
+              ? "Final deliverable ready"
+              : "Run finished — decision memo missing"}
+          </p>
+          <p className="text-muted-foreground mt-1 text-sm leading-relaxed">
+            {run.decision_memo_markdown?.trim() ? (
+              <>
+                Your <strong>AI decision memo</strong> is the first section on
+                this page (saved on this run in the database). The top nav{" "}
+                <strong>Memo template</strong> link is only a{" "}
+                <strong>blank printable</strong> — it does not load your run.
+              </>
+            ) : (
+              <>
+                Generation may have failed or the run predates memo storage. Use
+                &quot;Generate decision memo now&quot; below, or check the audit
+                log for <code className="text-foreground/80">decision_memo_failed</code>.
+              </>
+            )}
+          </p>
+        </div>
+      ) : null}
+
+      {run.status === "completed" ? (
+        <>
+          <section
+            id="decision-memo-final"
+            className="border-primary/25 from-primary/[0.04] scroll-mt-24 space-y-4 rounded-xl border bg-gradient-to-b to-transparent p-1"
+          >
+            <div className="px-1 pt-1">
+              <h2 className="text-foreground text-sm font-semibold tracking-wide uppercase">
+                Final output — Decision memo
+              </h2>
+              <p className="text-muted-foreground mt-1 max-w-3xl text-sm leading-relaxed">
+                Stored on this run as{" "}
+                <code className="text-foreground/85 text-xs">
+                  runs.decision_memo_markdown
+                </code>
+                . Generated when the run completes (approve + performance, or
+                deny at cue) using the performance-tier model chain. For a blank
+                paper form, use nav{" "}
+                <Link
+                  href="/resources/decision-memo"
+                  className="text-primary font-medium underline-offset-4 hover:underline"
+                >
+                  Memo template
+                </Link>
+                .
+              </p>
+            </div>
+
+            <DecisionMemoLineage
+              topic={run.topic}
+              userMessage={run.user_message}
+              messages={messages}
+              gates={gates}
+              steps={steps}
+            />
+
+            {run.decision_memo_markdown?.trim() ? (
+              <div className="border-border/60 bg-card/40 rounded-lg border p-4">
+                <div className="mb-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <p className="text-muted-foreground text-xs font-medium uppercase tracking-wide">
+                      Generated memo
+                    </p>
+                    <DecisionMemoExport
+                      markdown={run.decision_memo_markdown}
+                      topic={run.topic}
+                      printRef={memoPrintRef}
+                    />
+                  </div>
+                  {decisionMemoGeneratedAt ? (
+                    <p className="text-muted-foreground mt-1.5 font-mono text-[11px] leading-relaxed">
+                      Last recorded{" "}
+                      <time dateTime={decisionMemoGeneratedAt}>
+                        {formatUtcTimestamp(decisionMemoGeneratedAt)}
+                      </time>{" "}
+                      · audit{" "}
+                      <code className="text-foreground/85">decision_memo_generated</code>
+                    </p>
+                  ) : (
+                    <p className="text-muted-foreground mt-1.5 font-mono text-[11px]">
+                      No <code className="text-foreground/85">decision_memo_generated</code>{" "}
+                      event in audit (older run or logged before this event existed).
+                    </p>
+                  )}
+                </div>
+                <div
+                  ref={memoPrintRef}
+                  className="max-h-[min(70vh,720px)] overflow-y-auto rounded-md border border-border/50 bg-background/60 p-4 shadow-inner"
+                >
+                  <MemoMarkdown source={run.decision_memo_markdown} />
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3 px-1 pb-2">
+                <p className="text-muted-foreground text-sm leading-relaxed">
+                  No generated memo stored yet. Common cases: this run finished
+                  before the memo column existed, generation failed (see{" "}
+                  <code className="text-foreground/80">decision_memo_failed</code>{" "}
+                  in the audit log), or the pipeline has not finished writing.
+                </p>
+                {steps.length > 0 || gates.length > 0 ? (
+                  <div className="flex flex-col items-start gap-2">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      disabled={memoBusy}
+                      onClick={() => void regenerateMemo()}
+                    >
+                      {memoBusy ? "Generating…" : "Generate decision memo now"}
+                    </Button>
+                    {memoError ? (
+                      <p className="text-destructive text-sm">{memoError}</p>
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="text-muted-foreground text-sm">
+                    No gate or execution data on this run — nothing to feed a
+                    memo.
+                  </p>
+                )}
+              </div>
+            )}
+          </section>
+          <Separator />
+        </>
+      ) : null}
+
+      <section id="discussion-transcript" className="scroll-mt-24 space-y-3">
         <h2 className="text-muted-foreground text-xs font-medium tracking-widest uppercase">
           Stage — discussion
         </h2>
@@ -281,7 +463,7 @@ export function RunDetail({
 
       <Separator />
 
-      <section className="space-y-3">
+      <section id="cue-approval" className="scroll-mt-24 space-y-3">
         <h2 className="text-muted-foreground text-xs font-medium tracking-widest uppercase">
           Cue — approval gate
         </h2>
@@ -312,80 +494,12 @@ export function RunDetail({
 
       <Separator />
 
-      <section className="space-y-3">
+      <section id="performance-execution" className="scroll-mt-24 space-y-3">
         <h2 className="text-muted-foreground text-xs font-medium tracking-widest uppercase">
           Performance — execution
         </h2>
         <ExecutionTimeline runId={runId} steps={steps} />
       </section>
-
-      {run.status === "completed" ? (
-        <>
-          <Separator />
-          <section className="space-y-3">
-            <h2 className="text-muted-foreground text-xs font-medium tracking-widest uppercase">
-              Decision memo — generated
-            </h2>
-            {run.decision_memo_markdown?.trim() ? (
-              <div className="border-border/60 bg-card/30 rounded-lg border p-4">
-                <p className="text-muted-foreground mb-3 text-xs leading-relaxed">
-                  Filled automatically when the run finishes (
-                  <code className="text-foreground/80">PERFORMANCE_MODEL</code>
-                  ; after approve + performance, or after deny). Blank template
-                  for your own notes:{" "}
-                  <Link
-                    href="/resources/decision-memo"
-                    className="text-primary underline-offset-4 hover:underline"
-                  >
-                    /resources/decision-memo
-                  </Link>
-                  .
-                </p>
-                <div className="max-h-[min(70vh,720px)] overflow-y-auto rounded-md border border-border/50 bg-background/50 p-3">
-                  <MemoMarkdown source={run.decision_memo_markdown} />
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <p className="text-muted-foreground text-sm leading-relaxed">
-                  No generated memo stored yet. Common cases: this run finished
-                  before the memo column existed, generation failed (see script
-                  for{" "}
-                  <code className="text-foreground/80">decision_memo_failed</code>
-                  ), or the pipeline has not finished writing. Printable blank:{" "}
-                  <Link
-                    href="/resources/decision-memo"
-                    className="text-primary underline-offset-4 hover:underline"
-                  >
-                    decision memo template
-                  </Link>
-                  .
-                </p>
-                {steps.length > 0 || gates.length > 0 ? (
-                  <div className="flex flex-col items-start gap-2">
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      disabled={memoBusy}
-                      onClick={() => void regenerateMemo()}
-                    >
-                      {memoBusy ? "Generating…" : "Generate decision memo now"}
-                    </Button>
-                    {memoError ? (
-                      <p className="text-destructive text-sm">{memoError}</p>
-                    ) : null}
-                  </div>
-                ) : (
-                  <p className="text-muted-foreground text-sm">
-                    No gate or execution data on this run — nothing to feed a
-                    memo.
-                  </p>
-                )}
-              </div>
-            )}
-          </section>
-        </>
-      ) : null}
 
       <Separator />
 

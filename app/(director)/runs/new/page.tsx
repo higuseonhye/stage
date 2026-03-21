@@ -17,7 +17,20 @@ import {
   isFirstHireExampleContent,
   STAGE_EXAMPLES,
 } from "@/lib/stage-examples";
+import { ContextLayer } from "@/components/ContextLayer";
+import type { ContextGraph } from "@/lib/context-graph";
+import { initialSnapshotFromGraph } from "@/lib/context-graph";
 const defaultExample = STAGE_EXAMPLES.find((e) => e.id === DEFAULT_EXAMPLE_ID)!;
+
+type ApiProject = {
+  id: string;
+  name: string;
+  goal: string | null;
+  context_snapshot: Record<string, unknown> | null;
+  created_at: string;
+};
+
+const CREATE_PROJECT_VALUE = "__create__";
 
 export default function NewRunPage() {
   const router = useRouter();
@@ -32,6 +45,34 @@ export default function NewRunPage() {
     daily: { remaining: number; limit: number; resetsAt: string };
     question: { remaining: number; limit: number; applies: boolean };
   } | null>(null);
+
+  const [projects, setProjects] = useState<ApiProject[]>([]);
+  const [projectId, setProjectId] = useState<string>("");
+  const [newProjectName, setNewProjectName] = useState("");
+  const [newProjectGoal, setNewProjectGoal] = useState("");
+  const [creatingProject, setCreatingProject] = useState(false);
+
+  /** infer → validate → then run form */
+  const [contextStep, setContextStep] = useState<"gate" | "form">("gate");
+  const [savedContextGraph, setSavedContextGraph] =
+    useState<ContextGraph | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/projects", { credentials: "include" });
+        if (!res.ok) return;
+        const j = (await res.json()) as { projects?: ApiProject[] };
+        if (!cancelled && j.projects) setProjects(j.projects);
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const loadQuota = useCallback(async () => {
     try {
@@ -75,9 +116,18 @@ export default function NewRunPage() {
     return () => clearTimeout(t);
   }, [loadQuota]);
 
+  useEffect(() => {
+    if (projectId !== CREATE_PROJECT_VALUE || !savedContextGraph) return;
+    setNewProjectName((prev) =>
+      prev.trim() ? prev : savedContextGraph.idea.slice(0, 200),
+    );
+  }, [projectId, savedContextGraph]);
+
   const applyExample = (id: string) => {
     const ex = STAGE_EXAMPLES.find((e) => e.id === id);
     if (!ex) return;
+    setContextStep("form");
+    setSavedContextGraph(null);
     setSelectedExampleId(id);
     setTopic(ex.topic);
     setUserMessage(ex.brief);
@@ -87,15 +137,89 @@ export default function NewRunPage() {
     selectedExampleId === FIRST_HIRE_EXAMPLE_ID ||
     isFirstHireExampleContent(topic, userMessage);
 
+  const selectedProject = projects.find((p) => p.id === projectId);
+  const snapshot = selectedProject?.context_snapshot;
+  const hasContextPreview =
+    snapshot &&
+    typeof snapshot === "object" &&
+    !Array.isArray(snapshot) &&
+    Object.keys(snapshot).length > 0;
+
+  const createProject = async () => {
+    const name = newProjectName.trim();
+    if (!name) return;
+    setCreatingProject(true);
+    setErr(null);
+    try {
+      const res = await fetch("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          goal: newProjectGoal.trim() || undefined,
+          ...(savedContextGraph
+            ? { contextGraph: savedContextGraph }
+            : {}),
+        }),
+        credentials: "include",
+      });
+      const j = (await res.json()) as {
+        id?: string;
+        error?: unknown;
+        hint?: string;
+      };
+      if (!res.ok) {
+        const base =
+          typeof j.error === "string"
+            ? j.error
+            : typeof j.error === "object" && j.error !== null
+              ? JSON.stringify(j.error)
+              : "Could not create project";
+        const hint = typeof j.hint === "string" ? `\n${j.hint}` : "";
+        throw new Error(`${base}${hint}`);
+      }
+      if (j.id) {
+        const row: ApiProject = {
+          id: j.id,
+          name,
+          goal: newProjectGoal.trim() || null,
+          context_snapshot: savedContextGraph
+            ? initialSnapshotFromGraph(savedContextGraph)
+            : {},
+          created_at: new Date().toISOString(),
+        };
+        setProjects((prev) => [row, ...prev]);
+        setProjectId(j.id);
+        setNewProjectName("");
+        setNewProjectGoal("");
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCreatingProject(false);
+    }
+  };
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (projectId === CREATE_PROJECT_VALUE) {
+      setErr('Finish creating a project (name + "Create project") or choose another option.');
+      return;
+    }
     setBusy(true);
     setErr(null);
     try {
       const res = await fetch("/api/runs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ topic, userMessage }),
+        body: JSON.stringify({
+          topic,
+          userMessage,
+          ...(projectId ? { projectId } : {}),
+          ...(savedContextGraph && projectId
+            ? { contextGraph: savedContextGraph }
+            : {}),
+        }),
         credentials: "include",
       });
       const j = (await res.json()) as { id?: string; error?: unknown };
@@ -129,9 +253,131 @@ export default function NewRunPage() {
       </Link>
       <h1 className="mb-2 text-2xl font-semibold tracking-tight">New run</h1>
       <p className="text-muted-foreground mb-2 text-sm">
-        Give the actors a topic and brief. You&apos;ll cue approval before
-        anything executes.
+        Context-aware decision flow: minimal input → structured understanding →
+        validation → then the stage (discussion, cue, performance).
       </p>
+
+      {contextStep === "gate" ? (
+        <div className="mb-10 space-y-4">
+          <ContextLayer
+            onValidated={({ graph, topic: t, userMessage: um }) => {
+              setTopic(t);
+              setUserMessage(um);
+              setSavedContextGraph(graph);
+              setSelectedExampleId("");
+              setContextStep("form");
+            }}
+            onSkip={() => setContextStep("form")}
+          />
+        </div>
+      ) : null}
+
+      {contextStep === "form" ? (
+        <>
+          {savedContextGraph ? (
+            <details className="border-border/60 bg-muted/10 mb-6 rounded-lg border">
+              <summary className="cursor-pointer px-3 py-2 font-mono text-xs tracking-wide text-foreground/90 uppercase">
+                Validated context graph (AI-filled)
+              </summary>
+              <pre className="text-muted-foreground max-h-48 overflow-auto border-t px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
+                {JSON.stringify(savedContextGraph, null, 2)}
+              </pre>
+            </details>
+          ) : null}
+          <p className="text-muted-foreground mb-4 text-xs">
+            <button
+              type="button"
+              className="text-primary font-medium underline-offset-4 hover:underline"
+              onClick={() => {
+                setContextStep("gate");
+                setSavedContextGraph(null);
+              }}
+            >
+              ← Back to context layer
+            </button>
+          </p>
+      <section className="border-border/60 bg-card/20 mb-8 space-y-4 rounded-xl border p-4">
+        <h2 className="text-muted-foreground text-xs font-medium tracking-widest uppercase">
+          Project
+        </h2>
+        <p className="text-muted-foreground text-xs leading-relaxed">
+          Link this run to a project so discussion agents see accumulated
+          context. Context updates after each completed performance pipeline.
+        </p>
+        <div className="space-y-2">
+          <Label htmlFor="project">Select or create</Label>
+          <select
+            id="project"
+            className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-10 w-full rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+            value={projectId === CREATE_PROJECT_VALUE ? CREATE_PROJECT_VALUE : projectId}
+            onChange={(e) => setProjectId(e.target.value)}
+          >
+            <option value="">No project</option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+            <option value={CREATE_PROJECT_VALUE}>+ New project…</option>
+          </select>
+        </div>
+        {projectId === CREATE_PROJECT_VALUE ? (
+          <div className="space-y-3 rounded-lg border border-dashed p-3">
+            <div className="space-y-2">
+              <Label htmlFor="np-name">New project name</Label>
+              <Input
+                id="np-name"
+                value={newProjectName}
+                onChange={(e) => setNewProjectName(e.target.value)}
+                placeholder="e.g. Q3 retention initiative"
+                maxLength={200}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="np-goal">Project goal (optional)</Label>
+              <Textarea
+                id="np-goal"
+                value={newProjectGoal}
+                onChange={(e) => setNewProjectGoal(e.target.value)}
+                placeholder="Longer-term north star for this project…"
+                rows={3}
+                maxLength={8000}
+                className="font-mono text-sm"
+              />
+            </div>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              disabled={creatingProject || !newProjectName.trim()}
+              onClick={() => void createProject()}
+            >
+              {creatingProject ? "Creating…" : "Create project"}
+            </Button>
+          </div>
+        ) : null}
+        {projectId &&
+        projectId !== CREATE_PROJECT_VALUE &&
+        hasContextPreview ? (
+          <details className="border-border/60 bg-muted/15 rounded-lg border">
+            <summary className="cursor-pointer px-3 py-2 font-mono text-xs tracking-wide text-foreground/90 uppercase">
+              What we know so far (context snapshot)
+            </summary>
+            <pre className="text-muted-foreground max-h-64 overflow-auto border-t px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
+              {JSON.stringify(snapshot, null, 2)}
+            </pre>
+          </details>
+        ) : null}
+        {projectId &&
+        projectId !== CREATE_PROJECT_VALUE &&
+        !hasContextPreview ? (
+          <p className="text-muted-foreground font-mono text-xs">
+            No accumulated context yet — it will build after you complete
+            performance runs under this project.
+          </p>
+        ) : null}
+      </section>
+
       <div className="text-muted-foreground mb-6 space-y-1 font-mono text-xs leading-relaxed">
         {quota ? (
           <>
@@ -185,7 +431,9 @@ export default function NewRunPage() {
           </Link>{" "}
           — generic printable memo for any run (options, risks, cue, sign-off);{" "}
           <code className="text-foreground/80">docs/decision-memo.md</code>. Also
-          in the top nav as <span className="text-foreground/80">Decision memo</span>.
+          in the top nav as{" "}
+          <span className="text-foreground/80">Memo template</span> (blank only;
+          generated memos are on each completed run).
         </p>
         {showFirstHireMemoLink ? (
           <p className="text-muted-foreground text-xs leading-relaxed">
@@ -298,6 +546,8 @@ export default function NewRunPage() {
           {busy ? "Creating…" : "Open the stage"}
         </Button>
       </form>
+        </>
+      ) : null}
     </div>
   );
 }

@@ -3,6 +3,7 @@ import { notFound, redirect } from "next/navigation";
 export const dynamic = "force-dynamic";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { fetchRunForPage } from "@/lib/fetch-run-for-page";
+import { userHasWorkspaceAccess } from "@/lib/workspace-access";
 import { RunDetail } from "@/components/RunDetail";
 
 type PageProps = { params: Promise<{ id: string }> };
@@ -19,13 +20,18 @@ export default async function RunPage({ params }: PageProps) {
 
   if (runErr || !run) notFound();
 
-  const { data: workspace } = await supabase
-    .from("workspaces")
-    .select("owner_id")
-    .eq("id", run.workspace_id)
-    .maybeSingle();
+  let projectName: string | null = null;
+  if (run.project_id) {
+    const { data: proj } = await supabase
+      .from("projects")
+      .select("name")
+      .eq("id", run.project_id)
+      .maybeSingle();
+    projectName = proj?.name ?? null;
+  }
 
-  if (!workspace || workspace.owner_id !== user.id) notFound();
+  const canAccess = await userHasWorkspaceAccess(supabase, user.id, run.workspace_id);
+  if (!canAccess) notFound();
 
   const [
     { data: messages },
@@ -55,6 +61,7 @@ export default async function RunPage({ params }: PageProps) {
   return (
     <RunDetail
       runId={id}
+      projectName={projectName}
       initialRun={{
         id: run.id,
         topic: run.topic,

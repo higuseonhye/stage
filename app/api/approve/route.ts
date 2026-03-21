@@ -2,7 +2,12 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { executePerformanceStep } from "@/lib/execution";
+import {
+  buildPerformanceSummaryFromPlanOutputs,
+  persistProjectContextAfterPerformance,
+} from "@/lib/context";
 import { persistDecisionMemoForRun } from "@/lib/persist-decision-memo";
+import { userHasWorkspaceAccess } from "@/lib/workspace-access";
 
 export const maxDuration = 300;
 
@@ -18,6 +23,7 @@ type PlanCtx = {
   analyst: string;
   critic: string;
   strategist: string;
+  executor: string;
 };
 
 async function assertGateAndOwner(
@@ -38,19 +44,18 @@ async function assertGateAndOwner(
 
   const { data: run } = await supabase
     .from("runs")
-    .select("id, workspace_id, topic, status, user_message")
+    .select("id, workspace_id, topic, status, user_message, project_id")
     .eq("id", gate.run_id)
     .maybeSingle();
 
   if (!run) return { error: "Run not found" as const };
 
-  const { data: workspace } = await supabase
-    .from("workspaces")
-    .select("owner_id")
-    .eq("id", run.workspace_id)
-    .maybeSingle();
-
-  if (!workspace || workspace.owner_id !== userId) {
+  const canAccess = await userHasWorkspaceAccess(
+    supabase,
+    userId,
+    run.workspace_id,
+  );
+  if (!canAccess) {
     return { error: "Forbidden" as const };
   }
 
@@ -162,11 +167,12 @@ export async function POST(request: Request) {
     analyst: "",
     critic: "",
     strategist: "",
+    executor: "",
   };
 
   const pipeline: {
     step_index: number;
-    agent_id: keyof PlanCtx | "executor";
+    agent_id: "analyst" | "critic" | "strategist" | "executor";
     buildInput: (c: PlanCtx) => string;
     store: (c: PlanCtx, out: string) => void;
   }[] = [
@@ -202,8 +208,8 @@ export async function POST(request: Request) {
       agent_id: "executor",
       buildInput: (c) =>
         `Produce a concise operator handoff checklist (bullets) from the Strategist's refined plan below.\n\n--- Strategist refined plan ---\n${c.strategist}`,
-      store: () => {
-        /* terminal step */
+      store: (c, out) => {
+        c.executor = out;
       },
     },
   ];
@@ -257,6 +263,16 @@ export async function POST(request: Request) {
     });
 
     await persistDecisionMemoForRun(supabase, run.id);
+
+    const perfSummary = buildPerformanceSummaryFromPlanOutputs({
+      topic: run.topic,
+      userMessage: run.user_message ?? "",
+      analyst: acc.analyst,
+      critic: acc.critic,
+      strategist: acc.strategist,
+      executor: acc.executor,
+    });
+    await persistProjectContextAfterPerformance(supabase, run.id, perfSummary);
   } catch (e) {
     console.error(e);
     await supabase
