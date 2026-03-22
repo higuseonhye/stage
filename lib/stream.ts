@@ -42,7 +42,7 @@ export async function collectStreamedAssistantText(
   return full;
 }
 import { createOpenAI } from "@ai-sdk/openai";
-import type { AgentDefinition } from "@/lib/agents";
+import { AGENTS, type AgentDefinition } from "@/lib/agents";
 import {
   getDiscussionModelsOrdered,
   getPerformanceModelsOrdered,
@@ -177,4 +177,130 @@ export async function runAgentTurnText(
     }
   }
   throw lastErr;
+}
+
+// --- Structured multi-round debate (Stage panel) --------------------------------
+
+export type DebatePhase = "position" | "attack" | "defense";
+
+function formatAgentBlocks(
+  idToText: Record<string, string>,
+  excludeId?: string,
+): string {
+  return AGENTS.filter((a) => a.id !== excludeId)
+    .map(
+      (a) =>
+        `### ${a.name} (${a.id})\n${(idToText[a.id] ?? "").trim() || "(empty)"}`,
+    )
+    .join("\n\n");
+}
+
+function formatAllAgentBlocks(idToText: Record<string, string>): string {
+  return AGENTS.map(
+    (a) =>
+      `### ${a.name} (${a.id})\n${(idToText[a.id] ?? "").trim() || "(empty)"}`,
+  ).join("\n\n");
+}
+
+export function buildDebateUserPrompt(params: {
+  topic: string;
+  userMessage: string;
+  phase: DebatePhase;
+  agentId: string;
+  round1ByAgent: Record<string, string>;
+  round2ByAgent?: Record<string, string>;
+}): string {
+  const { topic, userMessage, phase, agentId, round1ByAgent, round2ByAgent } =
+    params;
+  const header = `Topic:\n${topic}\n\nDirector's brief:\n${userMessage || "(none)"}`;
+  if (phase === "position") {
+    return `${header}\n\n## Round 1 — Position\nState your initial position on this topic. Stay in character. Be specific and substantive.`;
+  }
+  if (phase === "attack") {
+    const others = formatAgentBlocks(round1ByAgent, agentId);
+    return `${header}\n\n## Round 1 — what other actors stated\n${others}\n\n## Round 2 — Attack\nCritically analyze weaknesses, gaps, blind spots, and risks in **each other actor's** Round 1 position above (not your own). Be direct and specific.`;
+  }
+  const r1 = (round1ByAgent[agentId] ?? "").trim() || "(empty)";
+  const r2All = formatAllAgentBlocks(round2ByAgent ?? {});
+  return `${header}\n\n## Your Round 1 position (yours)\n${r1}\n\n## Round 2 — full panel (attacks)\n${r2All}\n\n## Round 3 — Defend\nRespond to attacks on your position. Address objections, concede where appropriate, and strengthen or refine your stance.`;
+}
+
+export function streamDebateAgentTurn(params: {
+  agent: AgentDefinition;
+  topic: string;
+  userMessage: string;
+  phase: DebatePhase;
+  round1ByAgent: Record<string, string>;
+  round2ByAgent?: Record<string, string>;
+  model?: LanguageModel;
+  systemPrefix?: string;
+}) {
+  const prompt = buildDebateUserPrompt({
+    topic: params.topic,
+    userMessage: params.userMessage,
+    phase: params.phase,
+    agentId: params.agent.id,
+    round1ByAgent: params.round1ByAgent,
+    round2ByAgent: params.round2ByAgent,
+  });
+  const model = params.model ?? getDiscussionModel();
+  const system = params.systemPrefix?.trim()
+    ? `${params.systemPrefix.trim()}\n\n${params.agent.systemPrompt}`
+    : params.agent.systemPrompt;
+  return streamText({
+    model,
+    system,
+    prompt,
+    maxOutputTokens: 16_384,
+  });
+}
+
+const SYNTHESIS_SYSTEM = `You are a neutral facilitator summarizing a staged debate for a human Director (decision-maker).
+
+Rules:
+- Do not recommend a decision or tell the Director what to do.
+- Do not take sides or declare a winner.
+- Cover: main positions, key clashes, unresolved tensions, and what would need to change for each actor to move.
+- Use clear Markdown headings and bullets. Stay concise.`;
+
+function buildSynthesisUserPrompt(params: {
+  topic: string;
+  userMessage: string;
+  round1: Record<string, string>;
+  round2: Record<string, string>;
+  round3: Record<string, string>;
+}): string {
+  const block = (label: string, map: Record<string, string>) =>
+    `## ${label}\n${formatAllAgentBlocks(map)}`;
+  return `Topic:\n${params.topic}\n\nDirector's brief:\n${params.userMessage || "(none)"}
+
+${block("Round 1 — positions", params.round1)}
+
+${block("Round 2 — attacks", params.round2)}
+
+${block("Round 3 — defenses", params.round3)}
+
+Write the Synthesis: a neutral summary for the Director to read before giving cue.`;
+}
+
+export function streamSynthesis(params: {
+  topic: string;
+  userMessage: string;
+  round1: Record<string, string>;
+  round2: Record<string, string>;
+  round3: Record<string, string>;
+  model?: LanguageModel;
+  systemPrefix?: string;
+}) {
+  const prompt = buildSynthesisUserPrompt(params);
+  const model = params.model ?? getDiscussionModel();
+  const system = params.systemPrefix?.trim()
+    ? `${params.systemPrefix.trim()}\n\n${SYNTHESIS_SYSTEM}`
+    : SYNTHESIS_SYSTEM;
+  return streamText({
+    model,
+    system,
+    prompt,
+    maxOutputTokens: 16_384,
+  });
 }

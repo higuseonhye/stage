@@ -58,6 +58,7 @@ export type AgentMessageRow = {
   agent_name: string;
   content: string;
   round: number;
+  debate_phase?: string | null;
   created_at: string;
 };
 
@@ -96,6 +97,7 @@ export function RunDetail({
   const [audit, setAudit] = useState(initialAudit);
   const [messages, setMessages] = useState(initialMessages);
   const [criticExcerpt, setCriticExcerpt] = useState("");
+  const [liveSynthesisExcerpt, setLiveSynthesisExcerpt] = useState("");
   const [memoBusy, setMemoBusy] = useState(false);
   const [memoError, setMemoError] = useState<string | null>(null);
   const memoPrintRef = useRef<HTMLDivElement>(null);
@@ -116,6 +118,19 @@ export function RunDetail({
     [messages],
   );
 
+  const synthesisFromMessages = useMemo(() => {
+    const syn = messages.filter((m) => m.agent_id === "synthesis");
+    if (!syn.length) return "";
+    syn.sort(
+      (a, b) =>
+        b.round - a.round ||
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    );
+    return syn[0]?.content ?? "";
+  }, [messages]);
+
+  const synthesisForGate = liveSynthesisExcerpt || synthesisFromMessages;
+
   /** Latest successful memo write from audit (covers regenerate). */
   const decisionMemoGeneratedAt = useMemo(() => {
     const rows = audit.filter((e) => e.event_type === "decision_memo_generated");
@@ -124,6 +139,10 @@ export function RunDetail({
       new Date(e.created_at) > new Date(latest.created_at) ? e : latest,
     ).created_at;
   }, [audit]);
+
+  useEffect(() => {
+    setLiveSynthesisExcerpt("");
+  }, [runId]);
 
   const refresh = useCallback(async () => {
     const supabase = createBrowserSupabaseClient();
@@ -440,7 +459,11 @@ export function RunDetail({
           runId={runId}
           disabled={discussDisabled}
           persistedTexts={persistedAgentTexts}
-          onDiscussionComplete={(_, excerpt) => setCriticExcerpt(excerpt)}
+          onDiscussionComplete={(_, critic, synthesis) => {
+            setCriticExcerpt(critic);
+            if (synthesis?.trim()) setLiveSynthesisExcerpt(synthesis);
+            void refresh();
+          }}
         />
         {messages.length > 0 ? (
           <details className="border-border/60 bg-muted/10 rounded-lg border p-3">
@@ -451,7 +474,10 @@ export function RunDetail({
               {messages.map((m) => (
                 <li key={m.id} className="font-mono text-xs">
                   <span className="text-muted-foreground">
-                    R{m.round} · {m.agent_name}
+                    {m.debate_phase
+                      ? `${m.debate_phase} · R${m.round}`
+                      : `R${m.round}`}{" "}
+                    · {m.agent_name}
                   </span>
                   <pre className="mt-1 whitespace-pre-wrap">{m.content}</pre>
                 </li>
@@ -470,6 +496,7 @@ export function RunDetail({
         <ApprovalGate
           gate={pendingGate}
           criticExcerpt={criticExcerpt || criticFromMessages}
+          synthesisExcerpt={synthesisForGate || undefined}
           runId={runId}
           onDecided={() => void refresh()}
         />

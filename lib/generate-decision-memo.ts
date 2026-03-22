@@ -9,13 +9,31 @@ export type ExecutionStepSlice = {
   output: string;
 };
 
+function latestSynthesisContent(messages: AgentMessageLike[]): string {
+  const syn = messages.filter((m) => m.agent_id === "synthesis");
+  if (!syn.length) return "";
+  syn.sort(
+    (a, b) =>
+      b.round - a.round ||
+      new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  );
+  return (syn[0]?.content ?? "").trim();
+}
+
 function discussionBlock(messages: AgentMessageLike[]): string {
   const latest = latestContentByAgent(messages);
-  return AGENTS.map((a) => {
+  const parts = AGENTS.map((a) => {
     const body = (latest[a.id] ?? "").trim();
     const clipped = body.length > 4500 ? `${body.slice(0, 4500)}…` : body;
     return `### ${a.name}\n${clipped || "(no text)"}`;
-  }).join("\n\n");
+  });
+  const syn = latestSynthesisContent(messages);
+  if (syn) {
+    const clipped =
+      syn.length > 4500 ? `${syn.slice(0, 4500)}…` : syn;
+    parts.push(`### Synthesis\n${clipped}`);
+  }
+  return parts.join("\n\n");
 }
 
 function performanceBlock(steps: ExecutionStepSlice[]): string {

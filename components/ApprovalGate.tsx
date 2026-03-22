@@ -18,6 +18,8 @@ type Gate = {
 type Props = {
   gate: Gate | null;
   criticExcerpt: string;
+  /** Neutral debate summary — read before cue when present */
+  synthesisExcerpt?: string;
   runId: string;
   onDecided?: () => void;
 };
@@ -25,6 +27,7 @@ type Props = {
 export function ApprovalGate({
   gate,
   criticExcerpt,
+  synthesisExcerpt,
   runId,
   onDecided,
 }: Props) {
@@ -57,6 +60,10 @@ export function ApprovalGate({
   const planHeads = extractSectionHeadings(gate.action_plan, 10);
   const criticGlance = criticExcerpt
     ? atAGlanceSummary(criticExcerpt, 280)
+    : "";
+
+  const synthesisGlance = synthesisExcerpt?.trim()
+    ? atAGlanceSummary(synthesisExcerpt, 320)
     : "";
 
   const fmt = (s: number) => {
@@ -100,6 +107,26 @@ export function ApprovalGate({
           Waiting {fmt(waitSec)}
         </div>
       </div>
+
+      {synthesisExcerpt?.trim() ? (
+        <div className="mb-4 rounded-md border border-sky-500/40 bg-sky-500/5 p-3">
+          <h3 className="mb-1 text-xs font-medium tracking-wide text-sky-200/90 uppercase">
+            Synthesis — read before cue
+          </h3>
+          {synthesisGlance &&
+          synthesisGlance.length < synthesisExcerpt.trim().length ? (
+            <p className="mb-2 text-xs leading-snug text-sky-100/90">
+              <span className="font-medium text-sky-200/95">Skim: </span>
+              {synthesisGlance}
+            </p>
+          ) : null}
+          <div className="max-h-[min(220px,30vh)] overflow-y-auto rounded border border-sky-500/25 bg-sky-950/10 p-2">
+            <p className="font-mono text-xs leading-relaxed text-sky-100/85 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+              {synthesisExcerpt.trim()}
+            </p>
+          </div>
+        </div>
+      ) : null}
 
       {criticExcerpt ? (
         <div className="mb-4 rounded-md border border-amber-500/40 bg-amber-500/5 p-3">

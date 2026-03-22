@@ -3,7 +3,10 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
+import {
+  createBrowserSupabaseClient,
+  isSupabaseBrowserConfigured,
+} from "@/lib/supabase/browser";
 import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button-variants";
 import { cn } from "@/lib/utils";
@@ -37,6 +40,7 @@ export function SignupForm() {
   };
 
   const next = searchParams.get("next");
+  const supabaseReady = isSupabaseBrowserConfigured();
 
   return (
     <div className="flex min-h-full flex-col items-center justify-center px-4 py-16">
@@ -47,6 +51,20 @@ export function SignupForm() {
             Create your director account
           </p>
         </div>
+        {!supabaseReady ? (
+          <div className="border-amber-500/40 bg-amber-500/5 text-amber-100/90 rounded-md border p-3 text-xs leading-relaxed">
+            <p className="font-medium text-amber-200/95">Supabase env is not set</p>
+            <p className="mt-2 text-amber-100/85">
+              Create <code className="text-amber-50">.env.local</code> in the
+              project root (copy from{" "}
+              <code className="text-amber-50">.env.example</code>), add{" "}
+              <code className="text-amber-50">NEXT_PUBLIC_SUPABASE_URL</code> and{" "}
+              <code className="text-amber-50">NEXT_PUBLIC_SUPABASE_ANON_KEY</code>{" "}
+              from Supabase → Project Settings → API, then restart{" "}
+              <code className="text-amber-50">npm run dev</code>.
+            </p>
+          </div>
+        ) : null}
         <form onSubmit={submit} className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="email">Email</Label>
@@ -74,7 +92,11 @@ export function SignupForm() {
           {err ? (
             <p className="text-destructive font-mono text-xs">{err}</p>
           ) : null}
-          <Button type="submit" className="w-full" disabled={busy}>
+          <Button
+            type="submit"
+            className="w-full"
+            disabled={busy || !supabaseReady}
+          >
             {busy ? "Creating…" : "Create account"}
           </Button>
         </form>

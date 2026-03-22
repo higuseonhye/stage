@@ -3,35 +3,43 @@
 import { useCallback, useEffect, useState } from "react";
 import { AGENTS } from "@/lib/agents";
 import { AgentCard } from "@/components/AgentCard";
-import { RefinementChart } from "@/components/RefinementChart";
 import { Button } from "@/components/ui/button";
 import { Pin, Play } from "lucide-react";
 
 type NdEvent =
-  | { type: "token"; agentId: string; round: number; text: string }
-  | { type: "agent_round_complete"; agentId: string; round: number; text: string }
+  | {
+      type: "token";
+      agentId: string;
+      round: number;
+      phase?: string;
+      text: string;
+    }
+  | {
+      type: "agent_round_complete";
+      agentId: string;
+      round: number;
+      phase?: string;
+      text: string;
+    }
   | {
       type: "round_start";
       round: number;
       maxRounds: number;
+      phase?: string;
+      label?: string;
     }
-  | {
-      type: "convergence";
-      round: number;
-      score: number;
-      criticNewObjections: boolean;
-      strategistNewOptions: boolean;
-      perAgentScores?: Record<string, number>;
-    }
+  | { type: "synthesis_start" }
+  | { type: "synthesis_token"; text: string }
+  | { type: "synthesis_complete"; text: string }
   | {
       type: "discussion_complete";
       gateId: string;
       criticExcerpt: string;
+      synthesisExcerpt?: string;
       stopReason: string;
+      summaryLabel?: string;
       finalRound: number;
       maxRounds: number;
-      refinementByAgent?: Record<string, number[]>;
-      improvementSeries?: number[];
     }
   | { type: "error"; message: string };
 
@@ -39,7 +47,11 @@ type Props = {
   runId: string;
   disabled?: boolean;
   persistedTexts?: Record<string, string>;
-  onDiscussionComplete?: (gateId: string, criticExcerpt: string) => void;
+  onDiscussionComplete?: (
+    gateId: string,
+    criticExcerpt: string,
+    synthesisExcerpt?: string,
+  ) => void;
 };
 
 const PIN_KEY = "stage:pins:";
@@ -62,18 +74,7 @@ export function DiscussionPanel({
   const [doneGate, setDoneGate] = useState<string | null>(null);
   const [roundLabel, setRoundLabel] = useState<string | null>(null);
   const [stopReason, setStopReason] = useState<string | null>(null);
-  const [lastConvergence, setLastConvergence] = useState<{
-    score: number;
-    round: number;
-  } | null>(null);
-  const [perAgentImprovement, setPerAgentImprovement] = useState<
-    Record<string, number | null>
-  >(() => Object.fromEntries(AGENTS.map((a) => [a.id, null])));
-  const [refinementChart, setRefinementChart] = useState<{
-    refinementByAgent: Record<string, number[]>;
-    improvementSeries: number[];
-    finalRound: number;
-  } | null>(null);
+  const [synthesisText, setSynthesisText] = useState("");
 
   const storageKey = `${PIN_KEY}${runId}`;
 
@@ -106,9 +107,7 @@ export function DiscussionPanel({
     setDoneGate(null);
     setStopReason(null);
     setRoundLabel(null);
-    setLastConvergence(null);
-    setPerAgentImprovement(Object.fromEntries(AGENTS.map((a) => [a.id, null])));
-    setRefinementChart(null);
+    setSynthesisText("");
 
     try {
       const res = await fetch("/api/discuss", {
@@ -138,36 +137,30 @@ export function DiscussionPanel({
             [ev.agentId]: ev.text,
           }));
         } else if (ev.type === "round_start") {
-          setRoundLabel(`Round ${ev.round} / max ${ev.maxRounds}`);
+          setRoundLabel(
+            ev.label ??
+              `Round ${ev.round} / ${ev.maxRounds}`,
+          );
           setTextByAgent(emptyAgentMap());
-        } else if (ev.type === "convergence") {
-          setLastConvergence({ score: ev.score, round: ev.round });
-          if (ev.perAgentScores) {
-            setPerAgentImprovement((prev) => {
-              const next = { ...prev };
-              for (const a of AGENTS) {
-                const v = ev.perAgentScores?.[a.id];
-                if (typeof v === "number") next[a.id] = v;
-              }
-              return next;
-            });
-          }
+        } else if (ev.type === "synthesis_start") {
+          setSynthesisText("");
+          setRoundLabel("Synthesis — neutral summary");
+        } else if (ev.type === "synthesis_token") {
+          setSynthesisText((prev) => prev + ev.text);
+        } else if (ev.type === "synthesis_complete") {
+          setSynthesisText(ev.text);
         } else if (ev.type === "discussion_complete") {
           setDoneGate(ev.gateId);
           setStopReason(ev.stopReason);
-          setRoundLabel(`Round ${ev.finalRound} / max ${ev.maxRounds}`);
-          if (
-            ev.improvementSeries?.length &&
-            ev.refinementByAgent &&
-            Object.keys(ev.refinementByAgent).length > 0
-          ) {
-            setRefinementChart({
-              refinementByAgent: ev.refinementByAgent,
-              improvementSeries: ev.improvementSeries,
-              finalRound: ev.finalRound,
-            });
-          }
-          onDiscussionComplete?.(ev.gateId, ev.criticExcerpt);
+          setRoundLabel(
+            ev.summaryLabel ??
+              `Round ${ev.finalRound} / max ${ev.maxRounds}`,
+          );
+          onDiscussionComplete?.(
+            ev.gateId,
+            ev.criticExcerpt,
+            ev.synthesisExcerpt,
+          );
         } else if (ev.type === "error") {
           setError(ev.message);
         }
@@ -220,14 +213,7 @@ export function DiscussionPanel({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="text-muted-foreground min-h-[1.25rem] font-mono text-xs">
           {streaming || roundLabel ? (
-            <span>
-              {roundLabel ?? "Starting…"}
-              {streaming && lastConvergence ? (
-                <span className="text-muted-foreground/80 ml-2">
-                  (last panel Δ: {lastConvergence.score})
-                </span>
-              ) : null}
-            </span>
+            <span>{roundLabel ?? "Starting…"}</span>
           ) : null}
         </div>
         <div className="flex gap-2">
@@ -273,7 +259,6 @@ export function DiscussionPanel({
               key={agent.id}
               agent={agent}
               streaming={streaming}
-              improvementDelta={perAgentImprovement[agent.id] ?? null}
               plainTextForSummary={text || undefined}
               footer={
                 doneGate ? (
@@ -293,13 +278,15 @@ export function DiscussionPanel({
         })}
       </div>
 
-      {refinementChart &&
-      refinementChart.improvementSeries.length > 0 ? (
-        <RefinementChart
-          improvementSeries={refinementChart.improvementSeries}
-          refinementByAgent={refinementChart.refinementByAgent}
-          finalRound={refinementChart.finalRound}
-        />
+      {synthesisText ? (
+        <div className="border-border/60 bg-muted/15 rounded-lg border p-4">
+          <h3 className="text-muted-foreground mb-2 text-xs font-medium tracking-wide uppercase">
+            Synthesis — for the Director (before cue)
+          </h3>
+          <pre className="text-muted-foreground max-h-[min(320px,50vh)] overflow-y-auto font-mono text-xs leading-relaxed whitespace-pre-wrap break-words">
+            {synthesisText}
+          </pre>
+        </div>
       ) : null}
 
       {pins.length > 0 ? (

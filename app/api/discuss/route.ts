@@ -1,8 +1,12 @@
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { AGENTS } from "@/lib/agents";
 import { getDiscussionModelsOrdered } from "@/lib/model-fallback";
-import { collectStreamedAssistantText, streamAgentTurn } from "@/lib/stream";
-import { evaluateDiscussionConvergence } from "@/lib/convergence";
+import {
+  collectStreamedAssistantText,
+  streamDebateAgentTurn,
+  streamSynthesis,
+  type DebatePhase,
+} from "@/lib/stream";
 import { z } from "zod";
 import {
   RateLimitExceededError,
@@ -12,16 +16,25 @@ import { userHasWorkspaceAccess } from "@/lib/workspace-access";
 
 export const maxDuration = 300;
 
-const MAX_DISCUSSION_ROUNDS = 5;
+const DEBATE_PHASES: { phase: DebatePhase; label: string; debatePhase: string }[] =
+  [
+    { phase: "position", label: "Round 1 — Position", debatePhase: "position" },
+    { phase: "attack", label: "Round 2 — Attack", debatePhase: "attack" },
+    { phase: "defense", label: "Round 3 — Defend", debatePhase: "defense" },
+  ];
 
 const bodySchema = z.object({
   runId: z.string().uuid(),
 });
 
-function buildActionPlan(lastRound: Record<string, string>) {
-  const strategist = lastRound.strategist ?? "";
-  const executor = lastRound.executor ?? "";
-  return `## Proposed action plan (from Strategist)\n\n${strategist}\n\n## Execution checklist (from Executor)\n\n${executor}`;
+function buildActionPlanForCue(params: {
+  synthesis: string;
+  defenseRound: Record<string, string>;
+}) {
+  const synthesis = params.synthesis.trim();
+  const strategist = (params.defenseRound.strategist ?? "").trim();
+  const executor = (params.defenseRound.executor ?? "").trim();
+  return `## Synthesis (neutral summary for the Director)\n\n${synthesis}\n\n---\n\n## Strategist — Round 3 defense\n\n${strategist || "(empty)"}\n\n---\n\n## Executor — Round 3 defense\n\n${executor || "(empty)"}`;
 }
 
 export async function POST(request: Request) {
@@ -127,34 +140,37 @@ export async function POST(request: Request) {
       await supabase.from("audit_events").insert({
         run_id: runId,
         event_type: "discussion_started",
-        payload: { adaptive: true, maxRounds: MAX_DISCUSSION_ROUNDS },
+        payload: {
+          structure: "debate_v1",
+          rounds: DEBATE_PHASES.length,
+          synthesis: true,
+        },
       });
 
-      let priorRound: Record<string, string> = {};
       const allMessages: {
         agent_id: string;
         agent_name: string;
         content: string;
         round: number;
+        debate_phase: string;
       }[] = [];
 
-      let prevForConvergence: Record<string, string> | null = null;
-      let lowScoreStreak = 0;
-      let stopReason = "";
-      let lastRoundTexts: Record<string, string> = {};
-      const refinementByAgent: Record<string, number[]> = Object.fromEntries(
-        AGENTS.map((a) => [a.id, [] as number[]]),
-      );
-      const improvementSeries: number[] = [];
+      let round1: Record<string, string> = {};
+      let round2: Record<string, string> = {};
+      let round3: Record<string, string> = {};
 
-      for (let round = 0; round < MAX_DISCUSSION_ROUNDS; round++) {
+      for (let phaseIndex = 0; phaseIndex < DEBATE_PHASES.length; phaseIndex++) {
+        const { phase, label, debatePhase } = DEBATE_PHASES[phaseIndex];
         enqueue({
           type: "round_start",
-          round: round + 1,
-          maxRounds: MAX_DISCUSSION_ROUNDS,
+          round: phaseIndex + 1,
+          maxRounds: DEBATE_PHASES.length,
+          phase,
+          label,
         });
 
-        // Sequential agents avoid concurrent stream limits on some providers (empty deltas).
+        const phaseOutputs: Record<string, string> = {};
+
         for (const agent of AGENTS) {
           let full = "";
           const models = getDiscussionModelsOrdered();
@@ -165,12 +181,13 @@ export async function POST(request: Request) {
           }
           for (let mi = 0; mi < models.length; mi++) {
             try {
-              const result = streamAgentTurn({
+              const result = streamDebateAgentTurn({
                 agent,
                 topic: run.topic,
                 userMessage: run.user_message,
-                round,
-                priorRoundTexts: priorRound,
+                phase,
+                round1ByAgent: round1,
+                round2ByAgent: phase === "defense" ? round2 : undefined,
                 model: models[mi],
                 systemPrefix: systemPrefix || undefined,
               });
@@ -178,7 +195,8 @@ export async function POST(request: Request) {
                 enqueue({
                   type: "token",
                   agentId: agent.id,
-                  round,
+                  round: phaseIndex,
+                  phase,
                   text: chunk,
                 });
               });
@@ -198,10 +216,13 @@ export async function POST(request: Request) {
             }
           }
 
+          phaseOutputs[agent.id] = full;
+
           enqueue({
             type: "agent_round_complete",
             agentId: agent.id,
-            round,
+            round: phaseIndex,
+            phase,
             text: full,
           });
 
@@ -209,73 +230,66 @@ export async function POST(request: Request) {
             agent_id: agent.id,
             agent_name: agent.name,
             content: full,
-            round,
+            round: phaseIndex,
+            debate_phase: debatePhase,
           });
         }
 
-        const currentRound: Record<string, string> = Object.fromEntries(
-          AGENTS.map((a) => {
-            const row = allMessages.filter(
-              (m) => m.agent_id === a.id && m.round === round,
-            );
-            const last = row[row.length - 1];
-            return [a.id, last?.content ?? ""];
-          }),
+        if (phaseIndex === 0) round1 = { ...phaseOutputs };
+        else if (phaseIndex === 1) round2 = { ...phaseOutputs };
+        else round3 = { ...phaseOutputs };
+      }
+
+      enqueue({ type: "synthesis_start" });
+
+      let synthesisText = "";
+      const models = getDiscussionModelsOrdered();
+      if (models.length === 0) {
+        throw new Error(
+          "No AI providers configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, or GOOGLE_GENERATIVE_AI_API_KEY / GEMINI_API_KEY.",
         );
-
-        lastRoundTexts = { ...currentRound };
-
-        if (prevForConvergence !== null) {
-          const conv = await evaluateDiscussionConvergence({
-            previousRound: prevForConvergence,
-            currentRound,
+      }
+      for (let mi = 0; mi < models.length; mi++) {
+        try {
+          const result = streamSynthesis({
+            topic: run.topic,
+            userMessage: run.user_message,
+            round1,
+            round2,
+            round3,
+            model: models[mi],
+            systemPrefix: systemPrefix || undefined,
           });
-
-          improvementSeries.push(conv.improvement);
-          for (const a of AGENTS) {
-            refinementByAgent[a.id].push(conv.perAgent[a.id] ?? 0);
-          }
-
-          enqueue({
-            type: "convergence",
-            round: round + 1,
-            score: conv.improvement,
-            criticNewObjections: conv.critic_new_objections,
-            strategistNewOptions: conv.strategist_new_options,
-            perAgentScores: conv.perAgent,
+          synthesisText = await collectStreamedAssistantText(result, (chunk) => {
+            enqueue({ type: "synthesis_token", text: chunk });
           });
-
-          if (conv.improvement < 10) {
-            lowScoreStreak += 1;
-          } else {
-            lowScoreStreak = 0;
+          if (!synthesisText.trim()) {
+            throw new Error("Empty synthesis response");
           }
-
-          if (lowScoreStreak >= 2) {
-            stopReason = `Converged at round ${round + 1} — quality stable`;
-            break;
+          break;
+        } catch (e) {
+          if (mi < models.length - 1) {
+            console.warn(
+              `[ai] synthesis fallback ${mi + 1}→${mi + 2}/${models.length}:`,
+              e instanceof Error ? e.message : e,
+            );
+            continue;
           }
-
-          if (
-            !conv.critic_new_objections &&
-            !conv.strategist_new_options
-          ) {
-            stopReason = `Converged at round ${round + 1} — panel settled (no new objections or strategic options)`;
-            break;
-          }
-        }
-
-        prevForConvergence = { ...currentRound };
-        priorRound = { ...currentRound };
-
-        if (round === MAX_DISCUSSION_ROUNDS - 1) {
-          stopReason = `Stopped at round ${MAX_DISCUSSION_ROUNDS} — maximum rounds`;
+          throw e instanceof Error ? e : new Error(String(e));
         }
       }
 
-      if (!stopReason) {
-        stopReason = `Stopped at round ${MAX_DISCUSSION_ROUNDS} — maximum rounds`;
-      }
+      enqueue({ type: "synthesis_complete", text: synthesisText });
+
+      allMessages.push({
+        agent_id: "synthesis",
+        agent_name: "Synthesis",
+        content: synthesisText,
+        round: 3,
+        debate_phase: "synthesis",
+      });
+
+      const stopReason = "Debate complete — three rounds + synthesis";
 
       for (const m of allMessages) {
         await supabase.from("agent_messages").insert({
@@ -284,6 +298,7 @@ export async function POST(request: Request) {
           agent_name: m.agent_name,
           content: m.content,
           round: m.round,
+          debate_phase: m.debate_phase,
         });
         await supabase.from("audit_events").insert({
           run_id: runId,
@@ -291,12 +306,16 @@ export async function POST(request: Request) {
           payload: {
             agent_id: m.agent_id,
             round: m.round,
+            debate_phase: m.debate_phase,
             length: m.content.length,
           },
         });
       }
 
-      const actionPlan = buildActionPlan(lastRoundTexts);
+      const actionPlan = buildActionPlanForCue({
+        synthesis: synthesisText,
+        defenseRound: round3,
+      });
 
       const { data: gate, error: gateError } = await supabase
         .from("approval_gates")
@@ -321,20 +340,15 @@ export async function POST(request: Request) {
         payload: { gate_id: gate.id },
       });
 
-      const finalRoundNumber =
-        allMessages.length === 0
-          ? 1
-          : Math.max(...allMessages.map((m) => m.round)) + 1;
-
       enqueue({
         type: "discussion_complete",
         gateId: gate.id,
-        criticExcerpt: lastRoundTexts.critic ?? "",
+        criticExcerpt: round3.critic ?? "",
+        synthesisExcerpt: synthesisText,
         stopReason,
-        finalRound: finalRoundNumber,
-        maxRounds: MAX_DISCUSSION_ROUNDS,
-        refinementByAgent,
-        improvementSeries,
+        summaryLabel: "Debate complete — 3 rounds + synthesis",
+        finalRound: DEBATE_PHASES.length,
+        maxRounds: DEBATE_PHASES.length,
       });
     } catch (e) {
       console.error(e);
